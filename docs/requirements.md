@@ -103,11 +103,22 @@ PostgreSQL SHALL store at least these common header fields when supplied: Messag
 - Endpoint-specific article-number/location data SHALL be stored separately from the canonical article.
 - Headers are retained indefinitely until explicitly deleted.
 - No fixed database-size ceiling is required, but storage growth SHALL be visible to the user.
+- A user SHALL be able to mark a canonical article as locally unwanted and later
+  remove that mark. The mark is a persistent, application-local decision keyed
+  to the canonical Message-ID; it applies wherever the article is encountered,
+  including at another endpoint or in a crossposted group.
+- The UI SHALL permit marking unwanted articles individually and in a selected
+  batch (including a consecutive range from a result or storage view). Unwanted
+  articles SHALL be excluded from ordinary results by default but remain
+  discoverable with an explicit include-unwanted filter.
 
 ## 7. Text article retrieval
 
 - Article bodies SHALL be fetched only when explicitly opened or requested.
 - Cache the decoded text body only; retaining the complete original article is not required.
+- An unwanted mark SHALL prevent new on-demand body or attachment retrieval for
+  that canonical article unless the user explicitly removes the mark. It does
+  not delete an already cached body automatically.
 - Cached bodies SHALL NOT be full-text indexed in the initial requirements; header search is sufficient.
 - Plain-text display SHALL preserve line breaks and formatting.
 - For MIME/multipart articles, display readable text and provide access to individual attachments.
@@ -122,6 +133,8 @@ Initial web UI SHALL include:
 - a storage/coverage browser that starts with a list of stored newsgroups and their article counts, then permits drill-down into date ranges and individual articles;
 - basic indexing-job creation/status/pause/resume controls;
 - conventional paginated search results with sorting and filtering;
+- individual and batch unwanted-mark controls, with an explicit option to
+  include unwanted articles in results;
 - polling of the REST API every few seconds for indexing progress rather than requiring WebSockets/SSE;
 - a simple plain-text article reader;
 - a provider-status view showing configured NNTP providers/endpoints and lightweight operational statistics.

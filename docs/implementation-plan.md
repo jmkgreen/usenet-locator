@@ -28,6 +28,8 @@ Deliver:
 - durable jobs/checkpoints and manual pause/resume;
 - REST/OpenAPI;
 - SPA with basic job controls, provider/resource status, header search, article reader;
+- persistent individual and batch unwanted marks, with normal-result filtering
+  and suppression of new body retrieval;
 - on-demand text retrieval/cache and `.txt` export;
 - TLS-by-default and optional fail-closed VPN deployment;
 - operational logging/metrics and resource-pressure handling;

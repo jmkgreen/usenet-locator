@@ -12,6 +12,7 @@ This is the mandatory entry point for implementation agents.
 6. [`configuration.md`](configuration.md) — configuration, secrets, PostgreSQL deployment choices, resource controls, logging, and VPN integration.
 7. [`testing-acceptance.md`](testing-acceptance.md) — test-quality requirements, coverage gate, and acceptance criteria.
 8. [`implementation-plan.md`](implementation-plan.md) — staged delivery order and approval gates.
+9. [`stage-0-technical-proposal.md`](stage-0-technical-proposal.md) — proposed Stage 1 technical design; **awaiting approval**.
 
 The repository-level [`../README.md`](../README.md) is orientation only. If it conflicts with a detailed document, the detailed document governs; if two detailed documents conflict, `requirements.md` governs unless it explicitly delegates the decision.
 

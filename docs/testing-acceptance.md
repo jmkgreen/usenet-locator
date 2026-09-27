@@ -26,6 +26,8 @@ At minimum cover:
 - interrupted/partial batch handling;
 - search filters and pagination;
 - on-demand body caching behaviour;
+- individual and batch unwanted marking, filtering, persistence, and retrieval
+  suppression;
 - privacy-sensitive logging/metrics constraints where reasonably testable;
 - resource-pressure state transitions/throttling logic where reasonably testable;
 - API validation/error behaviour.
@@ -53,6 +55,9 @@ Performance: no fixed throughput target. Correctness/reliability matter more. Re
 - [ ] Interrupted jobs remain manually resumable after restart rather than silently restarting.
 - [ ] Search by subject, author, Message-ID, newsgroup, and date range works with pagination/sorting/filtering.
 - [ ] Opening an uncached text article fetches it on demand and subsequent access can use cached decoded text.
+- [ ] A user can mark one or a selected batch of articles unwanted; normal
+  results exclude them, the explicit filter includes them, and a marked
+  uncached article is not retrieved until it is unmarked.
 - [ ] Plain-text reader preserves formatting and `.txt` export works.
 - [ ] Provider-status UI exposes useful lightweight operational state.
 - [ ] Resource utilisation is visible enough to diagnose an overly constrained deployment.

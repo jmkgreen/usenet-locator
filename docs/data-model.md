@@ -66,6 +66,23 @@ Cache decoded text body on demand. Full raw articles need not be retained.
 
 Attachment metadata may be retained as necessary to present/access MIME attachments, but the model/UI must distinguish between an attachment that is actually stored locally and one that requires a future NNTP fetch.
 
+## 7.1 Local unwanted marks
+
+Persist a local, user-controlled unwanted mark against the canonical article
+identity (Message-ID), with creation/update timestamps and an optional local
+note. It is not a provider assertion, a deletion, or an end-user activity
+history. It applies globally to that canonical article across all memberships
+and endpoint locations.
+
+The model must support applying/removing marks efficiently to an explicit list
+of articles or a selected consecutive range. An unwanted mark prevents a new
+body/attachment retrieval but does not remove headers, endpoint locations,
+coverage, or an already cached body. The system may still receive an overview
+line while scanning an unexamined endpoint range; without knowing that
+endpoint's local article number in advance, it cannot avoid that protocol
+transfer. It must not perform a subsequent body retrieval for a marked
+canonical article.
+
 ## 8. Future binary grouping
 
 The Stage 1 schema should not prevent later modelling of a logical multipart binary group containing individual canonical articles/segments, including missing-segment information and generated NZB metadata. It is not necessary to fully implement that model in Stage 1 if doing so would add needless complexity.
