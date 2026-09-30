@@ -1,7 +1,7 @@
 # Stage 0 technical proposal
 
-**Status:** draft for approval. This document defines the proposed Stage 1
-implementation. It does not begin Stage 1 delivery.
+**Status:** approved. This document defines the Stage 1 implementation and its
+decision record. Stage 1 delivery is in progress.
 
 ## 1. Proposed stack
 
@@ -51,6 +51,15 @@ be corrected—the project will implement/fork only the small reader-oriented
 protocol layer required by Stage 1. The same transcript and live-provider
 conformance suite then becomes its regression safety net. This is a contained
 investment, not a full NNTP server implementation.
+
+**Stage 1 decision (28 September 2026):** neither reviewed dependency is in
+the production dependency graph. The implementation uses the contained,
+reader-oriented protocol layer behind the declared interface. It has
+transcript coverage for capability/reader-mode variance, `OVER`/`XOVER`
+fallback, malformed records, timeouts, dot-stuffing, and bounded body
+streaming. Live-provider qualification, date-range discovery, and indexing
+worker integration remain Stage 1 work; this decision does not claim broader
+NNTP-provider compatibility than has been tested.
 
 ### Language decision and future boundaries
 
@@ -149,7 +158,7 @@ the deployment guide will make that configuration explicit.
 
 ## 3. Database model and migrations
 
-SQL migrations are ordered, checksummed, and executed by `usenet-locator
+SQL migrations are ordered, checksummed, embedded in the application binary, and executed by `usenet-locator
 migrate` or on application startup only when `migrations.auto_apply=true`.
 Production external-database guidance will recommend running the explicit
 command under the application role. Migrations are transactional whenever

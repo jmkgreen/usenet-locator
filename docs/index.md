@@ -12,13 +12,14 @@ This is the mandatory entry point for implementation agents.
 6. [`configuration.md`](configuration.md) — configuration, secrets, PostgreSQL deployment choices, resource controls, logging, and VPN integration.
 7. [`testing-acceptance.md`](testing-acceptance.md) — test-quality requirements, coverage gate, and acceptance criteria.
 8. [`implementation-plan.md`](implementation-plan.md) — staged delivery order and approval gates.
-9. [`stage-0-technical-proposal.md`](stage-0-technical-proposal.md) — proposed Stage 1 technical design; **awaiting approval**.
+9. [`stage-0-technical-proposal.md`](stage-0-technical-proposal.md) — approved Stage 1 technical design and decision record.
+10. [`deployment.md`](deployment.md), [`user-guide.md`](user-guide.md), and [`developer.md`](developer.md) — operational, user, and contributor guidance.
 
 The repository-level [`../README.md`](../README.md) is orientation only. If it conflicts with a detailed document, the detailed document governs; if two detailed documents conflict, `requirements.md` governs unless it explicitly delegates the decision.
 
 ## Rules for an implementation agent
 
-- Begin with **Stage 1 only** and produce a technical design before main implementation.
+- Begin with **Stage 1 only** and produce a technical design before main implementation. The initial design has been approved; keep its decision record current when implementation changes it.
 - Do not silently weaken or replace confirmed requirements.
 - Ask for approval when a genuine product decision is unresolved; make ordinary low-level engineering choices independently and document them.
 - Human source-code readability is **not a weighted language-selection criterion**. Choose the backend technology for correctness, ecosystem suitability, NNTP capabilities, reliability, resource efficiency, maintainability by automated tooling, and deployability.

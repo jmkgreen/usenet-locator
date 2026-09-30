@@ -22,3 +22,7 @@ Multipart binary grouping, NZB generation/SABnzbd submission, advanced supplemen
 ## Documentation
 
 See [`docs/index.md`](docs/index.md).
+
+For deployment, use, and local verification, see the linked
+[`deployment guide`](docs/deployment.md), [`user guide`](docs/user-guide.md),
+and [`developer guide`](docs/developer.md).

@@ -1,0 +1,32 @@
+{
+  "database": {
+    "url_from_env": "USENET_LOCATOR_DATABASE_URL",
+    "max_conns": 4
+  },
+  "accounts": [
+    {
+      "id": "primary",
+      "username_from_env": "USENET_LOCATOR_NNTP_USERNAME",
+      "password_from_env": "USENET_LOCATOR_NNTP_PASSWORD",
+      "connection_limit": 1
+    }
+  ],
+  "endpoints": [
+    {
+      "id": "primary-eu",
+      "account_id": "primary",
+      "host": "news.example.net",
+      "port": 563,
+      "tls": true,
+      "plaintext_acknowledged": false,
+      "primary": true,
+      "priority": 1
+    }
+  ],
+  "resources": {
+    "active_jobs": 1,
+    "workers_per_job": 1,
+    "batch_size": 250,
+    "max_body_bytes": 5000000
+  }
+}

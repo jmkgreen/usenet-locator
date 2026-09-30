@@ -1,0 +1,389 @@
+openapi: 3.1.0
+info:
+  title: Historical Usenet Indexer API
+  version: 0.1.0
+  description: |
+    Stage 1 REST API for a self-hosted historical Usenet header indexer.
+    This contract is expanded alongside implementation; it never contains secrets.
+servers:
+  - url: /api/v1
+paths:
+  /system/status:
+    get:
+      operationId: getSystemStatus
+      summary: Get safe application status
+      responses:
+        '200':
+          description: Application status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemStatus'
+  /healthz:
+    get:
+      operationId: getHealth
+      summary: Container liveness check
+      responses:
+        '200':
+          description: Application is alive
+  /jobs:
+    post:
+      operationId: createIndexJob
+      summary: Queue an endpoint-specific header indexing job
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateJobRequest'
+      responses:
+        '201':
+          description: Job queued
+          headers:
+            Location:
+              required: true
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateJobResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /jobs/{id}:
+    get:
+      operationId: getIndexJob
+      summary: Get durable indexing job status
+      parameters:
+        - $ref: '#/components/parameters/JobID'
+      responses:
+        '200':
+          description: Job status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IndexJob'
+        '404':
+          description: Job does not exist
+  /jobs/{id}/pause:
+    post:
+      operationId: pauseIndexJob
+      summary: Request a running job to pause at a safe batch boundary
+      parameters: [{$ref: '#/components/parameters/JobID'}]
+      responses:
+        '200': {$ref: '#/components/responses/JobCommandAccepted'}
+        '404': {description: Job does not exist}
+        '409': {description: Job cannot be paused in its current state}
+  /jobs/{id}/resume:
+    post:
+      operationId: resumeIndexJob
+      summary: Requeue a paused or interrupted job from its durable checkpoint
+      parameters: [{$ref: '#/components/parameters/JobID'}]
+      responses:
+        '200': {$ref: '#/components/responses/JobCommandAccepted'}
+        '404': {description: Job does not exist}
+        '409': {description: Job cannot be resumed in its current state}
+  /jobs/{id}/cancel:
+    post:
+      operationId: cancelIndexJob
+      summary: Cancel a non-terminal job
+      parameters: [{$ref: '#/components/parameters/JobID'}]
+      responses:
+        '200': {$ref: '#/components/responses/JobCommandAccepted'}
+        '404': {description: Job does not exist}
+        '409': {description: Job cannot be cancelled in its current state}
+  /articles/unwanted:
+    post:
+      operationId: setArticlesUnwanted
+      summary: Atomically set or clear a local unwanted mark for selected articles
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetUnwantedRequest'
+      responses:
+        '200':
+          description: Article preferences updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SetUnwantedResponse'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404': {description: An article does not exist}
+  /articles/{id}:
+    get:
+      operationId: getArticleDetail
+      summary: Get stored canonical article headers without fetching a body
+      parameters: [{$ref: '#/components/parameters/ArticleID'}]
+      responses:
+        '200': {description: Stored article detail, content: {application/json: {schema: {$ref: '#/components/schemas/ArticleDetail'}}}}
+        '404': {description: Article does not exist}
+  /articles/{id}/body:
+    post:
+      operationId: retrieveArticleText
+      summary: Return cached text or explicitly retrieve and cache text from NNTP
+      parameters: [{$ref: '#/components/parameters/ArticleID'}]
+      responses:
+        '200': {description: Decoded text, content: {application/json: {schema: {$ref: '#/components/schemas/ArticleText'}}}}
+        '404': {description: Article or usable endpoint-local location does not exist}
+        '409': {description: Article is locally marked unwanted}
+        '429': {description: Configured provider transfer quota has been reached}
+        '502': {description: NNTP retrieval failed}
+  /search:
+    get:
+      operationId: searchStoredHeaders
+      summary: Search local headers; unwanted articles are excluded by default
+      parameters:
+        - {name: subject, in: query, schema: {type: string}}
+        - {name: author, in: query, schema: {type: string}}
+        - {name: message_id, in: query, schema: {type: string}}
+        - {name: newsgroup, in: query, schema: {type: string}}
+        - {name: start_date, in: query, schema: {type: string, format: date}}
+        - {name: end_date, in: query, schema: {type: string, format: date}}
+        - {name: include_unwanted, in: query, schema: {type: boolean, default: false}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
+        - {name: cursor, in: query, schema: {type: string}}
+      responses:
+        '200': {description: Keyset-paginated local article headers, content: {application/json: {schema: {$ref: '#/components/schemas/SearchPage'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+  /providers:
+    get:
+      operationId: listProviders
+      summary: List safe endpoint metadata, connection occupancy, and quota usage
+      responses:
+        '200': {description: Configured endpoints without credentials, content: {application/json: {schema: {$ref: '#/components/schemas/ProviderList'}}}}
+  /newsgroups:
+    get:
+      operationId: listStoredNewsgroups
+      summary: List locally stored newsgroups and canonical article counts
+      responses:
+        '200': {description: Stored group counts, content: {application/json: {schema: {$ref: '#/components/schemas/NewsgroupList'}}}}
+  /coverage:
+    get:
+      operationId: listCoverage
+      summary: List endpoint-specific scan coverage; this is not global completeness
+      parameters:
+        - {name: newsgroup, in: query, schema: {type: string}}
+      responses:
+        '200': {description: Endpoint-local coverage intervals, content: {application/json: {schema: {$ref: '#/components/schemas/CoverageList'}}}}
+components:
+  parameters:
+    JobID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ArticleID:
+      name: id
+      in: path
+      required: true
+      schema: {type: integer, format: int64, minimum: 1}
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    JobCommandAccepted:
+      description: Durable job command accepted
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/JobCommandResponse'
+  schemas:
+    SystemStatus:
+      type: object
+      required: [version, status, time]
+      properties:
+        version:
+          type: string
+        status:
+          type: string
+        time:
+          type: string
+          format: date-time
+    CreateJobRequest:
+      type: object
+      additionalProperties: false
+      required: [newsgroup, endpoint, start_date, end_date, margin_days]
+      properties:
+        newsgroup:
+          type: string
+          example: comp.lang.go
+        endpoint:
+          type: string
+          example: primary
+        start_date:
+          type: string
+          format: date
+        end_date:
+          type: string
+          format: date
+        margin_days:
+          type: integer
+          minimum: 0
+          maximum: 31
+    CreateJobResponse:
+      type: object
+      required: [id, state]
+      properties:
+        id:
+          type: string
+          format: uuid
+        state:
+          type: string
+          enum: [queued]
+    JobCommandResponse:
+      type: object
+      required: [id, state]
+      properties:
+        id:
+          type: string
+          format: uuid
+        state:
+          type: string
+          enum: [queued, paused, cancelled]
+    SetUnwantedRequest:
+      type: object
+      additionalProperties: false
+      required: [article_ids, unwanted]
+      properties:
+        article_ids:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          uniqueItems: true
+          items: {type: integer, format: int64}
+        unwanted: {type: boolean}
+    SetUnwantedResponse:
+      type: object
+      required: [article_ids, unwanted]
+      properties:
+        article_ids:
+          type: array
+          items: {type: integer, format: int64}
+        unwanted: {type: boolean}
+    ArticleSummary:
+      type: object
+      required: [id, message_id, subject, author, unwanted]
+      properties:
+        id: {type: integer, format: int64}
+        message_id: {type: string}
+        subject: {type: string}
+        author: {type: string}
+        date: {type: [string, 'null'], format: date-time}
+        unwanted: {type: boolean}
+    SearchPage:
+      type: object
+      required: [articles, next_cursor]
+      properties:
+        articles: {type: array, items: {$ref: '#/components/schemas/ArticleSummary'}}
+        next_cursor: {type: string}
+    ArticleDetail:
+      allOf:
+        - $ref: '#/components/schemas/ArticleSummary'
+        - type: object
+          required: [newsgroups, cached_body]
+          properties:
+            references: {type: string}
+            bytes: {type: [integer, 'null'], format: int64}
+            lines: {type: [integer, 'null'], format: int64}
+            newsgroups: {type: array, items: {type: string}}
+            cached_body: {type: boolean}
+    ArticleText:
+      type: object
+      required: [text]
+      properties: {text: {type: string}}
+    ProviderEndpoint:
+      type: object
+      required: [id, account_id, host, port, tls, primary, priority, connection_in_use, connection_limit, transfer_used_bytes]
+      properties:
+        id: {type: string}
+        account_id: {type: string}
+        host: {type: string}
+        port: {type: integer}
+        tls: {type: boolean}
+        primary: {type: boolean}
+        priority: {type: integer}
+        connection_in_use: {type: integer, minimum: 0}
+        connection_limit: {type: integer, minimum: 1}
+        transfer_used_bytes: {type: integer, format: int64, minimum: 0}
+        transfer_limit_bytes: {type: [integer, 'null'], format: int64, minimum: 1}
+    ProviderList:
+      type: object
+      required: [endpoints]
+      properties: {endpoints: {type: array, items: {$ref: '#/components/schemas/ProviderEndpoint'}}}
+    NewsgroupList:
+      type: object
+      required: [newsgroups]
+      properties:
+        newsgroups:
+          type: array
+          items:
+            type: object
+            required: [name, articles]
+            properties: {name: {type: string}, articles: {type: integer, format: int64}}
+    CoverageList:
+      type: object
+      required: [coverage]
+      properties:
+        coverage:
+          type: array
+          items:
+            type: object
+            required: [endpoint, newsgroup, state, article_number_start, article_number_end]
+            properties:
+              endpoint: {type: string}
+              newsgroup: {type: string}
+              state: {type: string, enum: [complete, partial, failed, unavailable]}
+              article_number_start: {type: integer, format: int64}
+              article_number_end: {type: integer, format: int64}
+              observed_start: {type: [string, 'null'], format: date-time}
+              observed_end: {type: [string, 'null'], format: date-time}
+              reason: {type: [string, 'null']}
+    IndexJob:
+      type: object
+      required: [id, newsgroup, endpoint, start_date, end_date, margin_days, state, headers_retrieved, articles_stored, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        newsgroup:
+          type: string
+        endpoint:
+          type: string
+        start_date:
+          type: string
+          format: date
+        end_date:
+          type: string
+          format: date
+        margin_days:
+          type: integer
+        state:
+          type: string
+          enum: [queued, running, paused, interrupted, completed, failed, cancelled]
+        headers_retrieved:
+          type: integer
+          format: int64
+        articles_stored:
+          type: integer
+          format: int64
+        last_error:
+          type: [string, 'null']
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string

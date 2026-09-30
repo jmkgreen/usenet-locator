@@ -1,0 +1,8 @@
+# Keep package-manager policy next to the lockfile. New package versions must
+# age for 48 hours before resolution, reducing exposure to compromised or
+# immediately-yanked releases. Frozen installs still use the committed lock.
+nodeVersion: "24.14.0"
+saveExact: true
+engineStrict: true
+minimumReleaseAge: 2880
+allowBuilds: {}
