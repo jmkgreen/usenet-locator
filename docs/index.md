@@ -14,6 +14,7 @@ This is the mandatory entry point for implementation agents.
 8. [`implementation-plan.md`](implementation-plan.md) — staged delivery order and approval gates.
 9. [`stage-0-technical-proposal.md`](stage-0-technical-proposal.md) — approved Stage 1 technical design and decision record.
 10. [`deployment.md`](deployment.md), [`user-guide.md`](user-guide.md), and [`developer.md`](developer.md) — operational, user, and contributor guidance.
+11. [`stage-2-proposal.md`](stage-2-proposal.md) — approved-direction proposal for provider expansion and MCP.
 
 The repository-level [`../README.md`](../README.md) is orientation only. If it conflicts with a detailed document, the detailed document governs; if two detailed documents conflict, `requirements.md` governs unless it explicitly delegates the decision.
 
