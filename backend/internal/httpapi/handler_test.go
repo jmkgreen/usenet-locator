@@ -16,6 +16,7 @@ import (
 	"github.com/james/usenet-locator/backend/internal/indexing"
 	"github.com/james/usenet-locator/backend/internal/jobs"
 	"github.com/james/usenet-locator/backend/internal/providers"
+	"github.com/james/usenet-locator/backend/internal/qualification"
 )
 
 type testJobs struct {
@@ -46,6 +47,18 @@ type testSearch struct {
 type testBodyFetcher struct {
 	body string
 	err  error
+}
+
+type testQualificationHistory struct {
+	items []qualification.History
+	err   error
+}
+
+func (s testQualificationHistory) Record(context.Context, string, qualification.Result) error {
+	return nil
+}
+func (s testQualificationHistory) List(context.Context, string) ([]qualification.History, error) {
+	return s.items, s.err
 }
 
 func (f testBodyFetcher) GetOrFetch(context.Context, int64) (string, error) { return f.body, f.err }
@@ -334,6 +347,17 @@ func TestProviderStatusDoesNotNeedSecrets(t *testing.T) {
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/providers", nil))
 	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"host":"news.example"`) || strings.Contains(res.Body.String(), "password") {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+}
+
+func TestProviderQualificationHistoryReturnsSafeRecords(t *testing.T) {
+	t.Parallel()
+	service := qualification.Service{History: testQualificationHistory{items: []qualification.History{{Endpoint: "primary", Result: qualification.Result{OverviewCode: 224, OverviewDates: 1}}}}}
+	handler := WithProviderPreflight(NewHandler("test"), service)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/providers/primary/qualifications", nil))
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"overview_code":224`) || strings.Contains(res.Body.String(), "password") {
 		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
 	}
 }

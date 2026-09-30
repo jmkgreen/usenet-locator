@@ -9,6 +9,7 @@ type ArticleDetail = Article & { references: string; bytes?: number | null; line
 type Endpoint = { id: string; account_id: string; host: string; port: number; tls: boolean; primary: boolean; priority: number; connection_in_use: number; connection_limit: number; transfer_used_bytes: number; transfer_limit_bytes: number | null };
 type GroupCount = { name: string; articles: number };
 type Coverage = { endpoint: string; newsgroup: string; state: string; article_number_start: number; article_number_end: number };
+type Qualification = { endpoint: string; result: { capabilities: string[]; overview_format_code: number; overview_fields: string[]; overview_code: number; overview_rows: number; overview_dates: number }; created_at: string };
 const api = "/api/v1";
 
 function formatBytes(bytes: number): string {
@@ -47,6 +48,7 @@ export function App() {
   const [endpoints, setEndpoints] = useState<Endpoint[]>([]);
   const [groups, setGroups] = useState<GroupCount[]>([]);
   const [coverage, setCoverage] = useState<Coverage[]>([]);
+  const [qualifications, setQualifications] = useState<Qualification[]>([]);
 
   useEffect(() => {
     if (!job || ["completed", "failed", "cancelled"].includes(job.state)) return;
@@ -120,6 +122,13 @@ export function App() {
     finally { setBusy(false); }
   }
 
+  async function loadQualifications(endpointID: string) {
+    setBusy(true); setError("");
+    try { const response = await request<{ qualifications: Qualification[] }>(`/providers/${encodeURIComponent(endpointID)}/qualifications`); setQualifications(response.qualifications); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Could not load qualification history"); }
+    finally { setBusy(false); }
+  }
+
   async function loadStorage() {
     setBusy(true); setError("");
     try { const [groupResponse, coverageResponse] = await Promise.all([request<{ newsgroups: GroupCount[] }>("/newsgroups"), request<{ coverage: Coverage[] }>("/coverage")]); setGroups(groupResponse.newsgroups); setCoverage(coverageResponse.coverage); }
@@ -139,7 +148,7 @@ export function App() {
       {nextCursor && <button disabled={busy} onClick={() => void search(nextCursor)}>Load more</button>}
     </section>
     {detail && <section><h2>Article header</h2><p><strong>{detail.subject || "(no subject)"}</strong><br />From: {detail.author || "Unknown"}<br />Message-ID: {detail.message_id}<br />Newsgroups: {detail.newsgroups.join(", ") || "Unknown"}<br />Body cache: {detail.cached_body ? "available" : "not retrieved"}</p>{detail.unwanted ? <p>This article is locally marked unwanted. Clear its unwanted mark before requesting any new body text.</p> : <button disabled={busy} onClick={() => void retrieveBody()}>{detail.cached_body ? "Open cached text" : "Retrieve text"}</button>}{bodyText && <><pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{bodyText}</pre><a download="article.txt" href={`data:text/plain;charset=utf-8,${encodeURIComponent(bodyText)}`}>Download text (.txt)</a></>}</section>}
-    <section><h2>Providers</h2><button disabled={busy} onClick={() => void loadProviders()}>Show configured endpoints</button>{endpoints.length > 0 && <table><thead><tr><th>Endpoint</th><th>Host</th><th>TLS</th><th>Connections</th><th>Transfer usage</th><th>Primary</th><th>Priority</th></tr></thead><tbody>{endpoints.map((endpoint) => <tr key={endpoint.id}><td>{endpoint.id}</td><td>{endpoint.host}:{endpoint.port}</td><td>{endpoint.tls ? "Required" : "Plaintext"}</td><td>{endpoint.connection_in_use}/{endpoint.connection_limit}</td><td>{endpoint.transfer_limit_bytes === null ? `${formatBytes(endpoint.transfer_used_bytes)} (unlimited)` : `${formatBytes(endpoint.transfer_used_bytes)} / ${formatBytes(endpoint.transfer_limit_bytes)}`}</td><td>{endpoint.primary ? "Yes" : "No"}</td><td>{endpoint.priority}</td></tr>)}</tbody></table>}</section>
+    <section><h2>Providers</h2><button disabled={busy} onClick={() => void loadProviders()}>Show configured endpoints</button>{endpoints.length > 0 && <table><thead><tr><th>Endpoint</th><th>Host</th><th>TLS</th><th>Connections</th><th>Transfer usage</th><th>Primary</th><th>Priority</th><th>Qualification</th></tr></thead><tbody>{endpoints.map((endpoint) => <tr key={endpoint.id}><td>{endpoint.id}</td><td>{endpoint.host}:{endpoint.port}</td><td>{endpoint.tls ? "Required" : "Plaintext"}</td><td>{endpoint.connection_in_use}/{endpoint.connection_limit}</td><td>{endpoint.transfer_limit_bytes === null ? `${formatBytes(endpoint.transfer_used_bytes)} (unlimited)` : `${formatBytes(endpoint.transfer_used_bytes)} / ${formatBytes(endpoint.transfer_limit_bytes)}`}</td><td>{endpoint.primary ? "Yes" : "No"}</td><td>{endpoint.priority}</td><td><button disabled={busy} onClick={() => void loadQualifications(endpoint.id)}>Show history</button></td></tr>)}</tbody></table>}{qualifications.length > 0 && <table><caption>Provider qualification history</caption><thead><tr><th>When</th><th>Overview</th><th>Parsed dates</th><th>Capabilities</th></tr></thead><tbody>{qualifications.map((item) => <tr key={`${item.endpoint}-${item.created_at}`}><td>{new Date(item.created_at).toLocaleString()}</td><td>{item.result.overview_code || "Not probed"}</td><td>{item.result.overview_dates}/{item.result.overview_rows}</td><td>{item.result.capabilities.join(", ") || "None"}</td></tr>)}</tbody></table>}</section>
     <section><h2>Storage and coverage</h2><button disabled={busy} onClick={() => void loadStorage()}>Show stored groups and coverage</button>{groups.length > 0 && <p>Stored groups: {groups.map((group) => `${group.name} (${group.articles})`).join(", ")}</p>}{coverage.length > 0 && <table><thead><tr><th>Newsgroup</th><th>Endpoint</th><th>Article range</th><th>State</th></tr></thead><tbody>{coverage.map((item) => <tr key={`${item.newsgroup}-${item.endpoint}-${item.article_number_start}`}><td>{item.newsgroup}</td><td>{item.endpoint}</td><td>{item.article_number_start}–{item.article_number_end}</td><td>{item.state}</td></tr>)}</tbody></table>}</section>
   </main>;
 }

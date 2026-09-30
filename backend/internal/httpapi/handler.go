@@ -114,6 +114,20 @@ func WithProviderStatus(next http.Handler, lister providers.Lister) http.Handler
 // check. It never returns credentials, Message-IDs, or provider response text.
 func WithProviderPreflight(next http.Handler, service qualification.Service) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/providers/") && strings.HasSuffix(r.URL.Path, "/qualifications") {
+			endpoint := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/providers/"), "/qualifications")
+			if service.History == nil {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "qualification history unavailable"})
+				return
+			}
+			items, err := service.History.List(r.Context(), endpoint)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not load qualification history"})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"qualifications": items})
+			return
+		}
 		if r.Method != http.MethodPost || !strings.HasPrefix(r.URL.Path, "/api/v1/providers/") || !strings.HasSuffix(r.URL.Path, "/preflight") {
 			next.ServeHTTP(w, r)
 			return

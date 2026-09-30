@@ -66,6 +66,11 @@ or coverage. It consumes the configured account transfer quota and connection
 permit, so run it sparingly and keep the service bound to loopback or behind an
 authenticated reverse proxy.
 
+Successful preflights are retained as safe endpoint qualification history. Read
+the latest records with `GET /api/v1/providers/{endpoint-id}/qualifications`.
+They exclude group names, Message-IDs, credentials, and raw provider response
+text.
+
 ### Date compatibility
 
 NNTP overview dates are mail dates, not necessarily strict RFC 1123 dates.

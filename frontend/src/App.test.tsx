@@ -45,6 +45,7 @@ test("job controls, result marks, reader retrieval, and providers use the API", 
     if (url === "/api/v1/articles/4") return new Response(JSON.stringify({ id: 4, message_id: "<a@test>", subject: "A subject", author: "Alice", newsgroups: ["comp.lang.go"], unwanted: false, cached_body: false }), { status: 200 });
     if (url === "/api/v1/articles/4/body") return new Response(JSON.stringify({ text: "body text" }), { status: 200 });
     if (url === "/api/v1/providers") return new Response(JSON.stringify({ endpoints: [{ id: "primary", host: "news.example", port: 563, tls: true, primary: true, priority: 1 }] }), { status: 200 });
+    if (url === "/api/v1/providers/primary/qualifications") return new Response(JSON.stringify({ qualifications: [{ endpoint: "primary", created_at: "2026-09-30T00:00:00Z", result: { capabilities: ["READER"], overview_code: 224, overview_rows: 1, overview_dates: 1 } }] }), { status: 200 });
     if (url === "/api/v1/newsgroups") return new Response(JSON.stringify({ newsgroups: [{ name: "comp.lang.go", articles: 2 }] }), { status: 200 });
     if (url === "/api/v1/coverage") return new Response(JSON.stringify({ coverage: [{ endpoint: "primary", newsgroup: "comp.lang.go", state: "complete", article_number_start: 1, article_number_end: 2 }] }), { status: 200 });
     return new Response("{}", { status: 500 });
@@ -56,8 +57,9 @@ test("job controls, result marks, reader retrieval, and providers use the API", 
   await click("Queue job"); await click("Pause"); await click("Resume"); await click("Cancel");
   await click("Search"); await click("Load more");
   await act(async () => { (document.querySelector('input[aria-label="Select <a@test>"]') as HTMLInputElement).click(); });
-  await click("Mark selected unwanted"); await click("Search"); await click("A subject"); await click("Retrieve text"); await click("Show configured endpoints"); await click("Show stored groups and coverage");
+  await click("Mark selected unwanted"); await click("Search"); await click("A subject"); await click("Retrieve text"); await click("Show configured endpoints"); await click("Show history"); await click("Show stored groups and coverage");
   expect(document.body.textContent).toContain("body text");
   expect(document.body.textContent).toContain("news.example:563");
   expect(document.body.textContent).toContain("comp.lang.go (2)");
+  expect(document.body.textContent).toContain("Provider qualification history");
 });

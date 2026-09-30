@@ -153,6 +153,13 @@ paths:
       summary: List safe endpoint metadata, connection occupancy, and quota usage
       responses:
         '200': {description: Configured endpoints without credentials, content: {application/json: {schema: {$ref: '#/components/schemas/ProviderList'}}}}
+  /providers/{id}/qualifications:
+    get:
+      operationId: listProviderQualifications
+      summary: List safe endpoint qualification history
+      parameters: [{$ref: '#/components/parameters/EndpointID'}]
+      responses:
+        '200': {description: Recent safe outcomes without credentials, Message-IDs, groups, or provider response text}
   /newsgroups:
     get:
       operationId: listStoredNewsgroups
@@ -181,6 +188,11 @@ components:
       in: path
       required: true
       schema: {type: integer, format: int64, minimum: 1}
+    EndpointID:
+      name: id
+      in: path
+      required: true
+      schema: {type: string, minLength: 1}
   responses:
     BadRequest:
       description: Invalid request

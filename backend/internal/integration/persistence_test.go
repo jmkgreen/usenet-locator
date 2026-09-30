@@ -18,6 +18,7 @@ import (
 	"github.com/james/usenet-locator/backend/internal/indexing"
 	"github.com/james/usenet-locator/backend/internal/jobs"
 	"github.com/james/usenet-locator/backend/internal/nntp"
+	"github.com/james/usenet-locator/backend/internal/qualification"
 )
 
 func TestPersistenceWorkflow(t *testing.T) {
@@ -96,6 +97,14 @@ func TestPersistenceWorkflow(t *testing.T) {
 	}
 	if _, err := articleStore.BodyTarget(ctx, detail.ID); err != articles.ErrUnwanted {
 		t.Fatalf("body target error = %v, want unwanted", err)
+	}
+	qualificationStore := qualification.NewStore(db.Pool)
+	if err := qualificationStore.Record(ctx, "primary", qualification.Result{Capabilities: []string{"READER", "LIST"}, OverviewFormatCode: 215, OverviewFields: []string{"subject", "date"}, OverviewCode: 224, OverviewRows: 1, OverviewDates: 1}); err != nil {
+		t.Fatalf("record qualification: %v", err)
+	}
+	history, err := qualificationStore.List(ctx, "primary")
+	if err != nil || len(history) != 1 || history[0].Result.OverviewCode != 224 || len(history[0].Result.OverviewFields) != 2 {
+		t.Fatalf("qualification history = %#v, err = %v", history, err)
 	}
 }
 

@@ -68,7 +68,9 @@ func main() {
 	handler := httpapi.NewHandlerWithServices("dev", db.Ready, jobStore, jobStore, articles.NewStore(db.Pool))
 	handler = httpapi.WithBodyRetrieval(handler, retrieval.New(cfg, articles.NewStore(db.Pool), accountGuard, quotaStore))
 	handler = httpapi.WithProviderStatus(handler, providers.New(cfg, quotaStore, accountGuard))
-	handler = httpapi.WithProviderPreflight(handler, qualification.New(cfg, accountGuard, quotaStore))
+	qualificationService := qualification.New(cfg, accountGuard, quotaStore)
+	qualificationService.History = qualification.NewStore(db.Pool)
+	handler = httpapi.WithProviderPreflight(handler, qualificationService)
 	handler = httpapi.WithStorageBrowser(handler, articles.NewStore(db.Pool), indexing.NewStore(db.Pool))
 	handler = httpapi.WithMetrics(handler, func() httpapi.MetricSnapshot {
 		stat := db.Pool.Stat()

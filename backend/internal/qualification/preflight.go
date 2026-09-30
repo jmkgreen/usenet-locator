@@ -32,6 +32,7 @@ type Service struct {
 	Guard     accounts.Guard
 	Quota     accounts.QuotaConsumer
 	Dial      func(context.Context, nntp.Endpoint) (nntp.Client, error)
+	History   HistoryStore
 }
 
 func New(cfg config.Config, guard accounts.Guard, quota accounts.QuotaConsumer) Service {
@@ -136,6 +137,11 @@ func (s Service) Run(ctx context.Context, endpointID, messageID, group string, a
 			result.OverviewCode = protocolErr.Code
 		} else {
 			return result, fmt.Errorf("overview check failed")
+		}
+	}
+	if s.History != nil {
+		if err := s.History.Record(ctx, endpointID, result); err != nil {
+			return result, fmt.Errorf("record qualification failed")
 		}
 	}
 	return result, nil
