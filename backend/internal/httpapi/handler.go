@@ -289,11 +289,14 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 }
 
 type createJobBody struct {
-	Newsgroup  string `json:"newsgroup"`
-	Endpoint   string `json:"endpoint"`
-	StartDate  string `json:"start_date"`
-	EndDate    string `json:"end_date"`
-	MarginDays *int   `json:"margin_days"`
+	Newsgroup          string `json:"newsgroup"`
+	Endpoint           string `json:"endpoint"`
+	StartDate          string `json:"start_date"`
+	EndDate            string `json:"end_date"`
+	MarginDays         *int   `json:"margin_days"`
+	ScanReason         string `json:"scan_reason"`
+	SourceJobID        string `json:"source_job_id"`
+	TransferLimitBytes *int64 `json:"transfer_limit_bytes"`
 }
 
 type unwantedBody struct {
@@ -419,7 +422,7 @@ func createJob(creator jobs.Creator) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "end_date must be YYYY-MM-DD"})
 			return
 		}
-		request := jobs.CreateRequest{NewsgroupID: strings.ToLower(body.Newsgroup), EndpointID: body.Endpoint, StartDate: start, EndDate: end, MarginDays: *body.MarginDays}
+		request := jobs.CreateRequest{NewsgroupID: strings.ToLower(body.Newsgroup), EndpointID: body.Endpoint, StartDate: start, EndDate: end, MarginDays: *body.MarginDays, ScanReason: body.ScanReason, SourceJobID: body.SourceJobID, TransferLimitBytes: body.TransferLimitBytes}
 		if err := request.Validate(); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -460,6 +463,8 @@ func jobResponse(job jobs.Job) map[string]any {
 		"start_date": job.StartDate.Format("2006-01-02"), "end_date": job.EndDate.Format("2006-01-02"),
 		"margin_days": job.MarginDays, "state": job.State,
 		"headers_retrieved": job.HeadersRetrieved, "articles_stored": job.ArticlesStored,
+		"scan_reason": job.ScanReason, "source_job_id": job.SourceJobID,
+		"transfer_limit_bytes": job.TransferLimitBytes, "transfer_used_bytes": job.TransferUsedBytes,
 		"last_error": job.LastError, "created_at": job.CreatedAt.UTC().Format(time.RFC3339),
 		"updated_at": job.UpdatedAt.UTC().Format(time.RFC3339),
 	}

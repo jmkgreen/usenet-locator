@@ -63,7 +63,7 @@ func main() {
 	defer stopWorkers()
 	accountGuard := accounts.NewGuard(cfg)
 	quotaStore := accounts.NewQuotaStore(db.Pool)
-	runner := indexing.NewRunner(cfg, indexing.NewStore(db.Pool), jobStore, accountGuard, quotaStore)
+	runner := indexing.NewRunner(cfg, indexing.NewStore(db.Pool), jobStore, accountGuard, quotaStore, jobStore)
 	go runDispatcher(workerContext, logger, dispatcher, runner)
 	handler := httpapi.NewHandlerWithServices("dev", db.Ready, jobStore, jobStore, articles.NewStore(db.Pool))
 	handler = httpapi.WithBodyRetrieval(handler, retrieval.New(cfg, articles.NewStore(db.Pool), accountGuard, quotaStore))

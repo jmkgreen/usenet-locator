@@ -239,6 +239,17 @@ components:
           type: integer
           minimum: 0
           maximum: 31
+        scan_reason:
+          type: string
+          enum: [operator_requested, missing_range, failed_batch]
+          default: operator_requested
+        source_job_id:
+          type: [string, 'null']
+          format: uuid
+        transfer_limit_bytes:
+          type: [integer, 'null']
+          format: int64
+          minimum: 1
     CreateJobResponse:
       type: object
       required: [id, state]
@@ -387,6 +398,20 @@ components:
           format: int64
         last_error:
           type: [string, 'null']
+        scan_reason:
+          type: string
+          enum: [operator_requested, missing_range, failed_batch]
+        source_job_id:
+          type: [string, 'null']
+          format: uuid
+        transfer_limit_bytes:
+          type: [integer, 'null']
+          format: int64
+          minimum: 1
+        transfer_used_bytes:
+          type: integer
+          format: int64
+          minimum: 0
         created_at:
           type: string
           format: date-time

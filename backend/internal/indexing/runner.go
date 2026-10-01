@@ -29,9 +29,10 @@ type Runner struct {
 	Dial      DialFunc
 	Guard     accounts.Guard
 	Quota     accounts.QuotaConsumer
+	JobQuota  jobs.TransferConsumer
 }
 
-func NewRunner(cfg config.Config, writer BatchWriter, finalizer jobs.Finalizer, guard accounts.Guard, quota accounts.QuotaConsumer) Runner {
+func NewRunner(cfg config.Config, writer BatchWriter, finalizer jobs.Finalizer, guard accounts.Guard, quota accounts.QuotaConsumer, jobQuota jobs.TransferConsumer) Runner {
 	endpoints := make(map[string]config.EndpointConfig, len(cfg.Endpoints))
 	for _, endpoint := range cfg.Endpoints {
 		endpoints[endpoint.ID] = endpoint
@@ -40,7 +41,7 @@ func NewRunner(cfg config.Config, writer BatchWriter, finalizer jobs.Finalizer, 
 	for _, account := range cfg.Accounts {
 		accounts[account.ID] = account
 	}
-	return Runner{Endpoints: endpoints, Accounts: accounts, Writer: writer, Finalizer: finalizer, BatchSize: int64(cfg.Resources.BatchSize), Dial: nntp.Dial, Guard: guard, Quota: quota}
+	return Runner{Endpoints: endpoints, Accounts: accounts, Writer: writer, Finalizer: finalizer, BatchSize: int64(cfg.Resources.BatchSize), Dial: nntp.Dial, Guard: guard, Quota: quota, JobQuota: jobQuota}
 }
 
 func (r Runner) Run(ctx context.Context, job jobs.Job) error {
@@ -79,14 +80,14 @@ func (r Runner) Run(ctx context.Context, job jobs.Job) error {
 	if err := client.ModeReader(ctx); err != nil {
 		return r.interrupt(ctx, job.ID, "NNTP reader mode failed")
 	}
-	if err := r.recordTransfer(ctx, account.ID, transferBytes(client)-charged); err != nil {
-		return r.interrupt(ctx, job.ID, "NNTP account transfer quota reached")
+	if err := r.recordTransfer(ctx, account.ID, job.ID, transferBytes(client)-charged); err != nil {
+		return r.interrupt(ctx, job.ID, transferFailureReason(err))
 	}
 	if err := (Scanner{Client: client, Writer: r.Writer, BatchSize: r.BatchSize, RecordTransfer: func(ctx context.Context, bytes int64) error {
-		return r.recordTransfer(ctx, account.ID, bytes)
+		return r.recordTransfer(ctx, account.ID, job.ID, bytes)
 	}}).Scan(ctx, job); err != nil {
-		if errors.Is(err, accounts.ErrQuotaExceeded) {
-			return r.interrupt(ctx, job.ID, "NNTP account transfer quota reached")
+		if errors.Is(err, accounts.ErrQuotaExceeded) || errors.Is(err, jobs.ErrTransferLimitExceeded) {
+			return r.interrupt(ctx, job.ID, transferFailureReason(err))
 		}
 		return r.interrupt(ctx, job.ID, scanFailureReason(err))
 	}
@@ -122,11 +123,26 @@ func transferBytes(client nntp.Client) int64 {
 	return 0
 }
 
-func (r Runner) recordTransfer(ctx context.Context, accountID string, bytes int64) error {
-	if r.Quota == nil || bytes <= 0 {
+func (r Runner) recordTransfer(ctx context.Context, accountID, jobID string, bytes int64) error {
+	if bytes <= 0 {
 		return nil
 	}
-	return r.Quota.Consume(ctx, accountID, bytes)
+	if r.Quota != nil {
+		if err := r.Quota.Consume(ctx, accountID, bytes); err != nil {
+			return err
+		}
+	}
+	if r.JobQuota != nil {
+		return r.JobQuota.ConsumeTransfer(ctx, jobID, bytes)
+	}
+	return nil
+}
+
+func transferFailureReason(err error) string {
+	if errors.Is(err, jobs.ErrTransferLimitExceeded) {
+		return "job transfer budget reached"
+	}
+	return "NNTP account transfer quota reached"
 }
 
 func (r Runner) interrupt(ctx context.Context, jobID, reason string) error {

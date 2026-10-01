@@ -79,6 +79,17 @@ that omit a weekday. If a qualification response reports overview rows but no
 parseable dates, stop before launching a broad scan and add a transcript test
 for the observed date form.
 
+## Supplementary scans
+
+Create a supplementary scan only when an operator identifies a specific
+endpoint-local missing range or failed batch. Select the supplementary endpoint,
+provide the original job ID as the source job, and set a conservative optional
+job budget in bytes. The budget is additional to the provider account quota: a
+job stops with `job transfer budget reached` when its measured NNTP traffic
+crosses the configured allowance. Article numbers are never reused across
+providers; the supplementary endpoint independently resolves the requested date
+range and records separate coverage and locations.
+
 ## VPN mode
 
 When a user-managed VPN gateway is required, attach the application to that

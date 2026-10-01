@@ -17,6 +17,9 @@ func NewStore(pool *pgxpool.Pool) Store { return Store{pool: pool} }
 
 // Create writes one job and its initial checkpoint in one transaction.
 func (s Store) Create(ctx context.Context, request CreateRequest) (string, error) {
+	if request.ScanReason == "" {
+		request.ScanReason = "operator_requested"
+	}
 	if err := request.Validate(); err != nil {
 		return "", err
 	}
@@ -35,8 +38,8 @@ func (s Store) Create(ctx context.Context, request CreateRequest) (string, error
 		return "", err
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO index_jobs
-        (id, newsgroup_id, endpoint_id, requested_start_date, requested_end_date, margin_days)
-        VALUES ($1, $2, $3, $4, $5, $6)`, id, groupID, request.EndpointID, request.StartDate, request.EndDate, request.MarginDays)
+		(id, newsgroup_id, endpoint_id, requested_start_date, requested_end_date, margin_days, scan_reason, source_job_id, transfer_limit_bytes)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, '')::uuid, $9)`, id, groupID, request.EndpointID, request.StartDate, request.EndDate, request.MarginDays, request.ScanReason, request.SourceJobID, request.TransferLimitBytes)
 	if err != nil {
 		return "", fmt.Errorf("insert job: %w", err)
 	}
@@ -56,10 +59,10 @@ func (s Store) Get(ctx context.Context, id string) (Job, error) {
 	var startDate, endDate time.Time
 	err := s.pool.QueryRow(ctx, `SELECT j.id, g.name, j.endpoint_id,
         j.requested_start_date, j.requested_end_date, j.margin_days, j.state,
-        j.headers_retrieved, j.articles_stored, j.last_error, j.created_at, j.updated_at
+		j.headers_retrieved, j.articles_stored, j.last_error, j.scan_reason, j.source_job_id, j.transfer_limit_bytes, j.transfer_used_bytes, j.created_at, j.updated_at
         FROM index_jobs j JOIN newsgroups g ON g.id = j.newsgroup_id WHERE j.id = $1`, id).Scan(
 		&job.ID, &job.Newsgroup, &job.Endpoint, &startDate, &endDate, &job.MarginDays,
-		&job.State, &job.HeadersRetrieved, &job.ArticlesStored, &job.LastError,
+		&job.State, &job.HeadersRetrieved, &job.ArticlesStored, &job.LastError, &job.ScanReason, &job.SourceJobID, &job.TransferLimitBytes, &job.TransferUsedBytes,
 		&job.CreatedAt, &job.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -96,9 +99,9 @@ func (s Store) ClaimNext(ctx context.Context) (Job, bool, error) {
     WHERE j.id = candidate.id
     RETURNING j.id, (SELECT name FROM newsgroups WHERE id = j.newsgroup_id), j.endpoint_id,
     j.requested_start_date, j.requested_end_date, j.margin_days, j.state, j.headers_retrieved,
-    j.articles_stored, j.last_error, j.created_at, j.updated_at`, Queued, Running).Scan(
+    j.articles_stored, j.last_error, j.scan_reason, j.source_job_id, j.transfer_limit_bytes, j.transfer_used_bytes, j.created_at, j.updated_at`, Queued, Running).Scan(
 		&job.ID, &job.Newsgroup, &job.Endpoint, &startDate, &endDate, &job.MarginDays, &job.State,
-		&job.HeadersRetrieved, &job.ArticlesStored, &job.LastError, &job.CreatedAt, &job.UpdatedAt)
+		&job.HeadersRetrieved, &job.ArticlesStored, &job.LastError, &job.ScanReason, &job.SourceJobID, &job.TransferLimitBytes, &job.TransferUsedBytes, &job.CreatedAt, &job.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Job{}, false, nil
 	}
@@ -140,6 +143,22 @@ func (s Store) Transition(ctx context.Context, id string, target State) error {
 // Complete is only valid for a worker-owned running job.
 func (s Store) Complete(ctx context.Context, id string) error {
 	return s.finish(ctx, id, Completed, "")
+}
+
+func (s Store) ConsumeTransfer(ctx context.Context, id string, bytes int64) error {
+	if bytes <= 0 {
+		return nil
+	}
+	var limit *int64
+	var used int64
+	err := s.pool.QueryRow(ctx, `UPDATE index_jobs SET transfer_used_bytes = transfer_used_bytes + $2, updated_at = now() WHERE id = $1 RETURNING transfer_used_bytes, transfer_limit_bytes`, id, bytes).Scan(&used, &limit)
+	if err != nil {
+		return fmt.Errorf("record job transfer: %w", err)
+	}
+	if limit != nil && used > *limit {
+		return ErrTransferLimitExceeded
+	}
+	return nil
 }
 
 // Interrupt records a safe, manually resumable stop. It only changes a

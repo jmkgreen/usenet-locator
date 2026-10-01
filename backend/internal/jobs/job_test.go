@@ -31,6 +31,15 @@ func TestCreateRequestRejectsNonMidnightUTCDate(t *testing.T) {
 	}
 }
 
+func TestCreateRequestRejectsNonPositiveTransferLimit(t *testing.T) {
+	r := request()
+	limit := int64(0)
+	r.TransferLimitBytes = &limit
+	if err := r.Validate(); err == nil {
+		t.Fatal("Validate() accepted a non-positive transfer limit")
+	}
+}
+
 func TestInterruptedJobsRequireManualResume(t *testing.T) {
 	if !CanTransition(Interrupted, Queued) || CanTransition(Interrupted, Completed) {
 		t.Fatal("unexpected interrupted-job transition policy")

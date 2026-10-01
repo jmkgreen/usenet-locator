@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { applicationName } from "./app-info";
 
 type JobState = "queued" | "running" | "paused" | "interrupted" | "completed" | "failed" | "cancelled";
-type Job = { id: string; newsgroup: string; endpoint: string; state: JobState; headers_retrieved: number; articles_stored: number; last_error?: string | null };
+type Job = { id: string; newsgroup: string; endpoint: string; state: JobState; headers_retrieved: number; articles_stored: number; scan_reason?: string; source_job_id?: string | null; transfer_limit_bytes?: number | null; transfer_used_bytes?: number; last_error?: string | null };
 type Article = { id: number; message_id: string; subject: string; author: string; date?: string | null; unwanted: boolean };
 type SearchPage = { articles: Article[]; next_cursor: string };
 type ArticleDetail = Article & { references: string; bytes?: number | null; lines?: number | null; newsgroups: string[]; cached_body: boolean };
@@ -33,6 +33,9 @@ export function App() {
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [marginDays, setMarginDays] = useState(2);
+  const [scanReason, setScanReason] = useState("operator_requested");
+  const [sourceJobID, setSourceJobID] = useState("");
+  const [transferLimit, setTransferLimit] = useState("");
   const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -59,7 +62,7 @@ export function App() {
   async function createJob(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setBusy(true); setError("");
     try {
-      const created = await request<{ id: string }>("/jobs", { method: "POST", body: JSON.stringify({ newsgroup, endpoint, start_date: startDate, end_date: endDate, margin_days: marginDays }) });
+      const created = await request<{ id: string }>("/jobs", { method: "POST", body: JSON.stringify({ newsgroup, endpoint, start_date: startDate, end_date: endDate, margin_days: marginDays, scan_reason: scanReason, source_job_id: sourceJobID, transfer_limit_bytes: transferLimit === "" ? null : Number(transferLimit) }) });
       setJob(await request<Job>(`/jobs/${created.id}`));
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not create job"); }
     finally { setBusy(false); }
@@ -139,10 +142,10 @@ export function App() {
   return <main style={{ fontFamily: "system-ui, sans-serif", lineHeight: 1.5, margin: "2rem auto", maxWidth: 760 }}>
     <h1>{applicationName}</h1><p>Queue an endpoint-specific historical header scan. Work continues independently of this page.</p>
     <form onSubmit={createJob} aria-label="Create indexing job">
-      <label>Newsgroup <input required value={newsgroup} onChange={(e) => setNewsgroup(e.target.value)} /></label>{" "}<label>Endpoint <input required value={endpoint} onChange={(e) => setEndpoint(e.target.value)} /></label>{" "}<label>Start <input required type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} /></label>{" "}<label>End <input required type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} /></label>{" "}<label>Margin days <input required type="number" min="0" max="31" value={marginDays} onChange={(e) => setMarginDays(Number(e.target.value))} /></label>{" "}<button disabled={busy} type="submit">Queue job</button>
+      <label>Newsgroup <input required value={newsgroup} onChange={(e) => setNewsgroup(e.target.value)} /></label>{" "}<label>Endpoint <input required value={endpoint} onChange={(e) => setEndpoint(e.target.value)} /></label>{" "}<label>Start <input required type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} /></label>{" "}<label>End <input required type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} /></label>{" "}<label>Margin days <input required type="number" min="0" max="31" value={marginDays} onChange={(e) => setMarginDays(Number(e.target.value))} /></label>{" "}<label>Reason <select value={scanReason} onChange={(e) => setScanReason(e.target.value)}><option value="operator_requested">Operator requested</option><option value="missing_range">Missing range</option><option value="failed_batch">Failed batch</option></select></label>{" "}{scanReason !== "operator_requested" && <><label>Source job <input required value={sourceJobID} onChange={(e) => setSourceJobID(e.target.value)} /></label>{" "}<label>Budget (bytes) <input min="1" type="number" value={transferLimit} onChange={(e) => setTransferLimit(e.target.value)} /></label>{" "}</>}<button disabled={busy} type="submit">Queue job</button>
     </form>
     {error && <p role="alert">{error}</p>}
-    {job && <section aria-live="polite"><h2>Job status</h2><dl><dt>Newsgroup</dt><dd>{job.newsgroup}</dd><dt>State</dt><dd>{job.state}</dd><dt>Headers retrieved</dt><dd>{job.headers_retrieved}</dd><dt>Articles stored</dt><dd>{job.articles_stored}</dd></dl>{job.last_error && <p>Last error: {job.last_error}</p>}{job.state === "running" && <button disabled={busy} onClick={() => command("pause")}>Pause</button>}{" "}{["paused", "interrupted"].includes(job.state) && <button disabled={busy} onClick={() => command("resume")}>Resume</button>}{" "}{!["completed", "failed", "cancelled"].includes(job.state) && <button disabled={busy} onClick={() => command("cancel")}>Cancel</button>}</section>}
+    {job && <section aria-live="polite"><h2>Job status</h2><dl><dt>Newsgroup</dt><dd>{job.newsgroup}</dd><dt>State</dt><dd>{job.state}</dd><dt>Reason</dt><dd>{job.scan_reason ?? "operator_requested"}</dd>{job.source_job_id && <><dt>Source job</dt><dd>{job.source_job_id}</dd></>}{job.transfer_limit_bytes && <><dt>Job budget</dt><dd>{formatBytes(job.transfer_used_bytes ?? 0)} / {formatBytes(job.transfer_limit_bytes)}</dd></>}<dt>Headers retrieved</dt><dd>{job.headers_retrieved}</dd><dt>Articles stored</dt><dd>{job.articles_stored}</dd></dl>{job.last_error && <p>Last error: {job.last_error}</p>}{job.state === "running" && <button disabled={busy} onClick={() => command("pause")}>Pause</button>}{" "}{["paused", "interrupted"].includes(job.state) && <button disabled={busy} onClick={() => command("resume")}>Resume</button>}{" "}{!["completed", "failed", "cancelled"].includes(job.state) && <button disabled={busy} onClick={() => command("cancel")}>Cancel</button>}</section>}
     <section><h2>Search stored headers</h2><form onSubmit={(event) => { event.preventDefault(); void search(); }} aria-label="Search headers"><label>Subject <input value={searchSubject} onChange={(event) => setSearchSubject(event.target.value)} /></label>{" "}<label>Author <input value={searchAuthor} onChange={(event) => setSearchAuthor(event.target.value)} /></label>{" "}<label>Newsgroup <input value={searchGroup} onChange={(event) => setSearchGroup(event.target.value)} /></label>{" "}<label><input type="checkbox" checked={includeUnwanted} onChange={(event) => setIncludeUnwanted(event.target.checked)} /> Include unwanted</label>{" "}<button disabled={busy} type="submit">Search</button></form>
       {articles.length > 0 && <><p><button disabled={busy || selected.size === 0} onClick={() => void markSelected(true)}>Mark selected unwanted</button>{" "}<button disabled={busy || selected.size === 0} onClick={() => void markSelected(false)}>Clear unwanted mark</button></p><table><thead><tr><th>Select</th><th>Subject</th><th>Author</th><th>Date</th><th>Message-ID</th><th>Unwanted</th></tr></thead><tbody>{articles.map((article) => <tr key={article.id}><td><input aria-label={`Select ${article.message_id}`} type="checkbox" checked={selected.has(article.id)} onChange={() => toggleSelected(article.id)} /></td><td><button onClick={() => void loadDetail(article.id)}>{article.subject || "(no subject)"}</button></td><td>{article.author}</td><td>{article.date ?? "Unknown"}</td><td>{article.message_id}</td><td>{article.unwanted ? "Yes" : "No"}</td></tr>)}</tbody></table></>}
       {nextCursor && <button disabled={busy} onClick={() => void search(nextCursor)}>Load more</button>}

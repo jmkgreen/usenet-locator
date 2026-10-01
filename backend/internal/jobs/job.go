@@ -22,28 +22,35 @@ const (
 )
 
 type CreateRequest struct {
-	NewsgroupID string
-	EndpointID  string
-	StartDate   time.Time
-	EndDate     time.Time
-	MarginDays  int
+	NewsgroupID        string
+	EndpointID         string
+	StartDate          time.Time
+	EndDate            time.Time
+	MarginDays         int
+	ScanReason         string
+	SourceJobID        string
+	TransferLimitBytes *int64
 }
 
 // Job is the safe, durable job status exposed to callers. It deliberately
 // excludes credentials and protocol transcripts.
 type Job struct {
-	ID               string
-	Newsgroup        string
-	Endpoint         string
-	StartDate        time.Time
-	EndDate          time.Time
-	MarginDays       int
-	State            State
-	HeadersRetrieved int64
-	ArticlesStored   int64
-	LastError        *string
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID                 string
+	Newsgroup          string
+	Endpoint           string
+	StartDate          time.Time
+	EndDate            time.Time
+	MarginDays         int
+	State              State
+	HeadersRetrieved   int64
+	ArticlesStored     int64
+	LastError          *string
+	ScanReason         string
+	SourceJobID        *string
+	TransferLimitBytes *int64
+	TransferUsedBytes  int64
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 var ErrNotFound = errors.New("job not found")
@@ -75,6 +82,11 @@ type Finalizer interface {
 	Complete(context.Context, string) error
 	Interrupt(context.Context, string, string) error
 }
+type TransferConsumer interface {
+	ConsumeTransfer(context.Context, string, int64) error
+}
+
+var ErrTransferLimitExceeded = errors.New("job transfer limit exceeded")
 
 func (r CreateRequest) Validate() error {
 	if r.NewsgroupID == "" || r.EndpointID == "" {
@@ -94,6 +106,18 @@ func (r CreateRequest) Validate() error {
 	}
 	if r.MarginDays < 0 || r.MarginDays > 31 {
 		return fmt.Errorf("margin days must be between 0 and 31")
+	}
+	if r.ScanReason == "" {
+		r.ScanReason = "operator_requested"
+	}
+	if r.ScanReason != "operator_requested" && r.ScanReason != "missing_range" && r.ScanReason != "failed_batch" {
+		return fmt.Errorf("invalid scan reason")
+	}
+	if r.ScanReason == "operator_requested" && r.SourceJobID != "" {
+		return fmt.Errorf("source job requires a supplementary scan reason")
+	}
+	if r.TransferLimitBytes != nil && *r.TransferLimitBytes < 1 {
+		return fmt.Errorf("transfer limit must be positive")
 	}
 	return nil
 }
