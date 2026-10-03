@@ -35,12 +35,21 @@ jobs:
         working-directory: frontend
   compose-smoke:
     runs-on: ubuntu-latest
-    env:
-      POSTGRES_PASSWORD: smoke-only-password
-      NNTP_USERNAME: unused
-      NNTP_PASSWORD: unused
     steps:
       - uses: actions/checkout@v4
+      - name: Create disposable smoke-test configuration and secrets
+        run: |
+          cp deploy/config.example.json deploy/config.local.json
+          mkdir -p deploy/secrets
+          printf '%s\n' 'smoke-only-password' > deploy/secrets/postgres-password
+          printf '%s\n' 'postgresql://usenet_locator:smoke-only-password@db:5432/usenet_locator?sslmode=disable' > deploy/secrets/database-url
+          for secret in \
+            nntp-provider-a-username nntp-provider-a-password \
+            nntp-provider-b-username nntp-provider-b-password \
+            nntp-provider-c-username nntp-provider-c-password \
+            nntp-primary-username nntp-primary-password; do
+            printf '%s\n' 'unused' > "deploy/secrets/$secret"
+          done
       - run: docker compose -f deploy/compose.yaml up --build --detach --wait
       - run: curl --fail --retry 10 --retry-connrefused http://127.0.0.1:8080/readyz
       - run: curl --fail http://127.0.0.1:8080/

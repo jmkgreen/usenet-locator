@@ -110,15 +110,17 @@ func TestPersistenceWorkflow(t *testing.T) {
 
 func createAndClaim(t *testing.T, ctx context.Context, store jobs.Store, group string, date time.Time) string {
 	t.Helper()
-	id, err := store.Create(ctx, jobs.CreateRequest{NewsgroupID: group, EndpointID: "primary", StartDate: date, EndDate: date, MarginDays: 0})
+	_, err := store.Create(ctx, jobs.CreateRequest{NewsgroupID: group, EndpointID: "primary", StartDate: date, EndDate: date, MarginDays: 0})
 	if err != nil {
 		t.Fatalf("create job: %v", err)
 	}
 	claimed, ok, err := store.ClaimNext(ctx)
-	if err != nil || !ok || claimed.ID != id {
+	if err != nil || !ok {
 		t.Fatalf("claim job = %#v, %v, %v", claimed, ok, err)
 	}
-	return id
+	// Create returns the fan-out parent. The dispatcher claims its provider
+	// child, which is the job that owns checkpoints and persisted headers.
+	return claimed.ID
 }
 
 func randomSuffix(t *testing.T) string {

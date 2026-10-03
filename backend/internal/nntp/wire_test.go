@@ -182,13 +182,18 @@ func TestCapabilitiesAndLegacyReaderMode(t *testing.T) {
 
 func TestOverviewFormatKeepsOnlyRecognisedFields(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
-	t.Cleanup(func() { _ = clientConn.Close() })
+	done := make(chan struct{})
+	t.Cleanup(func() {
+		close(done)
+		_ = clientConn.Close()
+	})
 	go func() {
 		defer serverConn.Close()
 		reader, writer := bufio.NewReader(serverConn), bufio.NewWriter(serverConn)
 		_, _ = reader.ReadString('\n')
 		_, _ = writer.WriteString("215 overview format follows\r\nSubject:\r\nFrom:\r\nX-Provider-Internal: opaque\r\n:bytes\r\n.\r\n")
 		_ = writer.Flush()
+		<-done
 	}()
 	c := &wireClient{conn: clientConn, text: textproto.NewConn(clientConn), ep: Endpoint{ReadTimeout: time.Second}}
 	format, err := c.OverviewFormat(context.Background())
