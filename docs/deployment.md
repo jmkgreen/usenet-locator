@@ -34,6 +34,42 @@ at that mounted path. The application only creates its own tables and migration
 ledger; it does not alter server-wide PostgreSQL settings. Keep the pool small
 (`max_conns: 4` is the reference value) when the database is shared.
 
+## Server deployment from GitHub Container Registry
+
+Every push to `main` publishes `ghcr.io/jmkgreen/usenet-locator:latest` and a
+commit-specific `sha-...` tag. Version tags such as `v1.2.3` also publish
+`v1.2.3` and `v1.2` image tags. The publishing workflow is also available from
+the repository's Actions page using **Run workflow**.
+
+For a server, copy `deploy/compose.server.yaml` as `compose.yaml`, copy
+`deploy/config.example.json` as `config.json`, and create the `secrets/`
+directory as described above. Replace the generic NNTP secret names in the
+Compose file with the names used by `config.json`. Set `USENET_LOCATOR_IMAGE`
+to a specific `sha-...` or version tag when you want a pinned deployment.
+
+Before an unauthenticated server can pull the image, open the package's
+**Package settings** in GitHub and change its visibility to Public after the
+first successful workflow run. If the package remains private, authenticate on
+the server with a GitHub personal access token that has `read:packages`:
+
+```text
+echo TOKEN | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
+```
+
+Start or upgrade the stack with:
+
+```text
+docker compose pull
+docker compose up -d
+docker compose ps
+curl --fail http://127.0.0.1:8080/readyz
+```
+
+The server Compose file does not contain a `build` section, so upgrades pull
+the published image rather than compiling source on the server. It binds both
+services to loopback; put the app behind an authenticated HTTPS reverse proxy
+before exposing it beyond the server.
+
 ## Secrets and TLS
 
 Configuration names secret-file paths but never contains their values. Supply

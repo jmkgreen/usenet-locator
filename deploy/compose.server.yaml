@@ -1,0 +1,55 @@
+services:
+  app:
+    image: ${USENET_LOCATOR_IMAGE:-ghcr.io/jmkgreen/usenet-locator:latest}
+    pull_policy: always
+    environment:
+      USENET_LOCATOR_CONFIG: /config/config.json
+    volumes:
+      - ./config.json:/config/config.json:ro
+      - ./secrets:/run/secrets:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+    secrets:
+      - nntp-provider-a-username
+      - nntp-provider-a-password
+      - nntp-provider-b-username
+      - nntp-provider-b-password
+      - nntp-provider-c-username
+      - nntp-provider-c-password
+    depends_on:
+      db:
+        condition: service_healthy
+  db:
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_DB: usenet_locator
+      POSTGRES_USER: usenet_locator
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U usenet_locator -d usenet_locator"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "127.0.0.1:5432:5432"
+    secrets:
+      - postgres-password
+volumes:
+  postgres-data:
+secrets:
+  postgres-password:
+    file: ./secrets/postgres-password
+  nntp-provider-a-username:
+    file: ./secrets/nntp-provider-a-username
+  nntp-provider-a-password:
+    file: ./secrets/nntp-provider-a-password
+  nntp-provider-b-username:
+    file: ./secrets/nntp-provider-b-username
+  nntp-provider-b-password:
+    file: ./secrets/nntp-provider-b-password
+  nntp-provider-c-username:
+    file: ./secrets/nntp-provider-c-username
+  nntp-provider-c-password:
+    file: ./secrets/nntp-provider-c-password
