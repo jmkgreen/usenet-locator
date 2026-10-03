@@ -174,6 +174,28 @@ paths:
         - {name: newsgroup, in: query, schema: {type: string}}
       responses:
         '200': {description: Endpoint-local coverage intervals, content: {application/json: {schema: {$ref: '#/components/schemas/CoverageList'}}}}
+  /watchlist:
+    get:
+      operationId: listWatchlist
+      summary: List groups scheduled for bounded retention checks
+      responses:
+        '200': {description: Watchlist entries, content: {application/json: {schema: {$ref: '#/components/schemas/Watchlist'}}}}
+    post:
+      operationId: saveWatchlistEntry
+      summary: Add a group or change its check interval
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/WatchlistEntryRequest'}}
+      responses:
+        '201': {description: Watchlist entry saved, content: {application/json: {schema: {$ref: '#/components/schemas/WatchlistEntry'}}}}
+  /watchlist/{newsgroup}:
+    delete:
+      operationId: removeWatchlistEntry
+      summary: Remove a group from recurring retention checks
+      parameters: [{name: newsgroup, in: path, required: true, schema: {type: string}}]
+      responses:
+        '204': {description: Entry removed}
 components:
   parameters:
     JobID:
@@ -218,6 +240,25 @@ components:
         time:
           type: string
           format: date-time
+    WatchlistEntryRequest:
+      type: object
+      required: [newsgroup, interval_hours]
+      properties:
+        newsgroup: {type: string}
+        interval_hours: {type: integer, minimum: 1, maximum: 168}
+    WatchlistEntry:
+      allOf:
+        - $ref: '#/components/schemas/WatchlistEntryRequest'
+        - type: object
+          required: [next_check_at]
+          properties:
+            last_checked_at: {type: [string, 'null'], format: date-time}
+            next_check_at: {type: string, format: date-time}
+    Watchlist:
+      type: object
+      required: [watchlist]
+      properties:
+        watchlist: {type: array, items: {$ref: '#/components/schemas/WatchlistEntry'}}
     CreateJobRequest:
       type: object
       additionalProperties: false

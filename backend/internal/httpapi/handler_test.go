@@ -10,13 +10,14 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/james/usenet-locator/backend/internal/accounts"
-	"github.com/james/usenet-locator/backend/internal/articles"
-	"github.com/james/usenet-locator/backend/internal/config"
-	"github.com/james/usenet-locator/backend/internal/indexing"
-	"github.com/james/usenet-locator/backend/internal/jobs"
-	"github.com/james/usenet-locator/backend/internal/providers"
-	"github.com/james/usenet-locator/backend/internal/qualification"
+	"github.com/jmkgreen/usenet-locator/backend/internal/accounts"
+	"github.com/jmkgreen/usenet-locator/backend/internal/articles"
+	"github.com/jmkgreen/usenet-locator/backend/internal/config"
+	"github.com/jmkgreen/usenet-locator/backend/internal/indexing"
+	"github.com/jmkgreen/usenet-locator/backend/internal/jobs"
+	"github.com/jmkgreen/usenet-locator/backend/internal/providers"
+	"github.com/jmkgreen/usenet-locator/backend/internal/qualification"
+	"github.com/jmkgreen/usenet-locator/backend/internal/retention"
 )
 
 type testJobs struct {
@@ -53,6 +54,20 @@ type testQualificationHistory struct {
 	items []qualification.History
 	err   error
 }
+type testRetention struct {
+	items  []retention.Observation
+	err    error
+	probed string
+}
+
+func (s *testRetention) Probe(_ context.Context, group string) ([]retention.Observation, error) {
+	s.probed = group
+	return s.items, s.err
+}
+func (s *testRetention) List(context.Context, string) ([]retention.Observation, error) {
+	return s.items, s.err
+}
+func (s *testRetention) RetrieveNext(context.Context, string, int) error { return s.err }
 
 func (s testQualificationHistory) Record(context.Context, string, qualification.Result) error {
 	return nil
@@ -62,6 +77,7 @@ func (s testQualificationHistory) List(context.Context, string) ([]qualification
 }
 
 func (f testBodyFetcher) GetOrFetch(context.Context, int64) (string, error) { return f.body, f.err }
+func (f testBodyFetcher) GetCached(context.Context, int64) (string, error)  { return f.body, f.err }
 
 type testStorage struct{}
 
@@ -232,13 +248,14 @@ func TestGetJob(t *testing.T) {
 		ID: "9a84900b-5d31-4acb-b917-b73b5a7c9e32", Newsgroup: "comp.lang.go", Endpoint: "primary",
 		StartDate: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC), EndDate: time.Date(2020, 1, 2, 0, 0, 0, 0, time.UTC),
 		MarginDays: 2, State: jobs.Running, HeadersRetrieved: 4, ArticlesStored: 3,
-		CreatedAt: time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC), UpdatedAt: time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC),
+		ProviderJobs: []jobs.ProviderJob{{Endpoint: "primary", State: jobs.Running, HeadersRetrieved: 4, ArticlesStored: 3}},
+		CreatedAt:    time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC), UpdatedAt: time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC),
 	}}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/9a84900b-5d31-4acb-b917-b73b5a7c9e32", nil)
 	res := httptest.NewRecorder()
 	NewHandlerWithDependencies("test", func(context.Context) error { return nil }, store, store).ServeHTTP(res, req)
 
-	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"state":"running"`) || !strings.Contains(res.Body.String(), `"start_date":"2020-01-01"`) {
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"state":"running"`) || !strings.Contains(res.Body.String(), `"start_date":"2020-01-01"`) || !strings.Contains(res.Body.String(), `"provider_jobs":[{"endpoint":"primary"`) {
 		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
 	}
 }
@@ -305,7 +322,7 @@ func TestSearchParsesInclusiveDates(t *testing.T) {
 	handler := NewHandlerWithServices("test", func(context.Context) error { return nil }, nil, nil, search)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/search?newsgroup=comp.lang.go&start_date=2020-01-01&end_date=2020-01-02&include_unwanted=true", nil))
-	if res.Code != http.StatusOK || search.request.Start == nil || search.request.End == nil || search.request.End.Format("2006-01-02") != "2020-01-03" || !search.request.IncludeUnwanted {
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"message_id":`) || search.request.Start == nil || search.request.End == nil || search.request.End.Format("2006-01-02") != "2020-01-03" || !search.request.IncludeUnwanted {
 		t.Fatalf("status = %d, request = %#v", res.Code, search.request)
 	}
 }
@@ -340,6 +357,26 @@ func TestBodyRetrievalReportsQuotaExhaustion(t *testing.T) {
 	}
 }
 
+func TestCachedBodyDownloadIsAnAttachmentWithoutNNTPFetch(t *testing.T) {
+	t.Parallel()
+	handler := WithBodyRetrieval(NewHandler("test"), testBodyFetcher{body: "cached text"})
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/articles/4/body/download", nil))
+	if res.Code != http.StatusOK || res.Body.String() != "cached text" || res.Header().Get("Content-Disposition") != "attachment; filename=article-4.txt" || res.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("status = %d, headers = %#v, body = %q", res.Code, res.Header(), res.Body.String())
+	}
+}
+
+func TestCachedBodyDownloadDoesNotFetchMissingText(t *testing.T) {
+	t.Parallel()
+	handler := WithBodyRetrieval(NewHandler("test"), testBodyFetcher{err: articles.ErrBodyNotCached})
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/articles/4/body/download", nil))
+	if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), "has not been retrieved") {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+}
+
 func TestProviderStatusDoesNotNeedSecrets(t *testing.T) {
 	t.Parallel()
 	cfg := config.Config{Accounts: []config.AccountConfig{{ID: "account", ConnectionLimit: 1}}, Endpoints: []config.EndpointConfig{{ID: "primary", AccountID: "account", Host: "news.example", Port: 563, TLS: true, Primary: true}}}
@@ -369,6 +406,23 @@ func TestStorageBrowserKeepsCoverageEndpointLocal(t *testing.T) {
 	handler.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/coverage?newsgroup=comp.lang.go", nil))
 	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"endpoint":"primary"`) {
 		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+}
+
+func TestRetentionProbeAndStoredHistoryRoutes(t *testing.T) {
+	t.Parallel()
+	articleID := int64(4)
+	service := &testRetention{items: []retention.Observation{{Endpoint: "primary", Newsgroup: "alt.test", ArticleID: &articleID, Outcome: "found"}}}
+	handler := WithRetention(NewHandler("test"), service)
+	probe := httptest.NewRecorder()
+	handler.ServeHTTP(probe, httptest.NewRequest(http.MethodPost, "/api/v1/newsgroups/alt.test/retention-probe", nil))
+	if probe.Code != http.StatusOK || service.probed != "alt.test" || !strings.Contains(probe.Body.String(), `"article_id":4`) {
+		t.Fatalf("probe = %d %s", probe.Code, probe.Body.String())
+	}
+	stored := httptest.NewRecorder()
+	handler.ServeHTTP(stored, httptest.NewRequest(http.MethodGet, "/api/v1/newsgroups/alt.test/retention", nil))
+	if stored.Code != http.StatusOK || !strings.Contains(stored.Body.String(), `"outcome":"found"`) {
+		t.Fatalf("stored = %d %s", stored.Code, stored.Body.String())
 	}
 }
 

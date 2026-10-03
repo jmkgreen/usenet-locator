@@ -10,16 +10,18 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/james/usenet-locator/backend/internal/accounts"
-	"github.com/james/usenet-locator/backend/internal/articles"
-	"github.com/james/usenet-locator/backend/internal/config"
-	"github.com/james/usenet-locator/backend/internal/database"
-	"github.com/james/usenet-locator/backend/internal/httpapi"
-	"github.com/james/usenet-locator/backend/internal/indexing"
-	"github.com/james/usenet-locator/backend/internal/jobs"
-	"github.com/james/usenet-locator/backend/internal/providers"
-	"github.com/james/usenet-locator/backend/internal/qualification"
-	"github.com/james/usenet-locator/backend/internal/retrieval"
+	"github.com/jmkgreen/usenet-locator/backend/internal/accounts"
+	"github.com/jmkgreen/usenet-locator/backend/internal/articles"
+	"github.com/jmkgreen/usenet-locator/backend/internal/config"
+	"github.com/jmkgreen/usenet-locator/backend/internal/database"
+	"github.com/jmkgreen/usenet-locator/backend/internal/httpapi"
+	"github.com/jmkgreen/usenet-locator/backend/internal/indexing"
+	"github.com/jmkgreen/usenet-locator/backend/internal/jobs"
+	"github.com/jmkgreen/usenet-locator/backend/internal/providers"
+	"github.com/jmkgreen/usenet-locator/backend/internal/qualification"
+	"github.com/jmkgreen/usenet-locator/backend/internal/retention"
+	"github.com/jmkgreen/usenet-locator/backend/internal/retrieval"
+	"github.com/jmkgreen/usenet-locator/backend/internal/watchlist"
 )
 
 func main() {
@@ -34,9 +36,9 @@ func main() {
 		logger.Error("configuration invalid", "error", err)
 		os.Exit(1)
 	}
-	databaseURL := os.Getenv(cfg.Database.URLFromEnv)
-	if databaseURL == "" {
-		logger.Error("database URL secret is unavailable", "environment", cfg.Database.URLFromEnv)
+	databaseURL, err := config.ReadSecretFile(cfg.Database.URLFile)
+	if err != nil {
+		logger.Error("database URL secret is unavailable", "path", cfg.Database.URLFile, "error", err)
 		os.Exit(1)
 	}
 	db, err := database.Open(context.Background(), databaseURL, cfg.Database.MaxConns)
@@ -65,6 +67,9 @@ func main() {
 	quotaStore := accounts.NewQuotaStore(db.Pool)
 	runner := indexing.NewRunner(cfg, indexing.NewStore(db.Pool), jobStore, accountGuard, quotaStore, jobStore)
 	go runDispatcher(workerContext, logger, dispatcher, runner)
+	retentionService := retention.New(cfg, retention.NewStore(db.Pool), accountGuard, quotaStore)
+	watchlistStore := watchlist.NewStore(db.Pool)
+	go runWatchlist(workerContext, logger, watchlistStore, retentionService)
 	handler := httpapi.NewHandlerWithServices("dev", db.Ready, jobStore, jobStore, articles.NewStore(db.Pool))
 	handler = httpapi.WithBodyRetrieval(handler, retrieval.New(cfg, articles.NewStore(db.Pool), accountGuard, quotaStore))
 	handler = httpapi.WithProviderStatus(handler, providers.New(cfg, quotaStore, accountGuard))
@@ -72,6 +77,9 @@ func main() {
 	qualificationService.History = qualification.NewStore(db.Pool)
 	handler = httpapi.WithProviderPreflight(handler, qualificationService)
 	handler = httpapi.WithStorageBrowser(handler, articles.NewStore(db.Pool), indexing.NewStore(db.Pool))
+	handler = httpapi.WithRetention(handler, retentionService)
+	handler = httpapi.WithWatchlist(handler, watchlistStore)
+	handler = httpapi.WithChronologicalBrowser(handler, articles.NewStore(db.Pool))
 	handler = httpapi.WithMetrics(handler, func() httpapi.MetricSnapshot {
 		stat := db.Pool.Stat()
 		return httpapi.MetricSnapshot{DBAcquiredConns: stat.AcquiredConns(), DBIdleConns: stat.IdleConns(), DBAcquireCount: stat.AcquireCount()}
@@ -111,6 +119,21 @@ func main() {
 	if err := server.Shutdown(ctx); err != nil {
 		logger.Error("graceful shutdown failed", "error", err)
 		os.Exit(1)
+	}
+}
+
+func runWatchlist(ctx context.Context, logger *slog.Logger, store watchlist.Store, prober retention.Service) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		if err := watchlist.RunDue(ctx, store, prober, time.Now().UTC()); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Error("watchlist check failed", "error", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 	}
 }
 

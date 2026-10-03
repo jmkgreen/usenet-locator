@@ -5,7 +5,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/james/usenet-locator/backend/internal/config"
+	"github.com/jmkgreen/usenet-locator/backend/internal/config"
 )
 
 type Guard struct{ permits map[string]chan struct{} }

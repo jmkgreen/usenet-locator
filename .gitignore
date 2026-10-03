@@ -8,6 +8,8 @@ node_modules/
 .env.*
 !.env.example
 deploy/config.local.json
+deploy/compose.local.yaml
+deploy/secrets/
 
 # Local runtime data and editor files
 data/

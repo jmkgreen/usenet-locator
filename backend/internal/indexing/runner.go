@@ -5,14 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os"
 	"strings"
 	"time"
 
-	"github.com/james/usenet-locator/backend/internal/accounts"
-	"github.com/james/usenet-locator/backend/internal/config"
-	"github.com/james/usenet-locator/backend/internal/jobs"
-	"github.com/james/usenet-locator/backend/internal/nntp"
+	"github.com/jmkgreen/usenet-locator/backend/internal/accounts"
+	"github.com/jmkgreen/usenet-locator/backend/internal/config"
+	"github.com/jmkgreen/usenet-locator/backend/internal/jobs"
+	"github.com/jmkgreen/usenet-locator/backend/internal/nntp"
 )
 
 type DialFunc func(context.Context, nntp.Endpoint) (nntp.Client, error)
@@ -61,8 +60,8 @@ func (r Runner) Run(ctx context.Context, job jobs.Job) error {
 	if r.Dial == nil || r.Writer == nil || r.Finalizer == nil || r.BatchSize < 1 {
 		return r.interrupt(ctx, job.ID, "index worker is incomplete")
 	}
-	username, password := os.Getenv(account.UsernameFromEnv), os.Getenv(account.PasswordFromEnv)
-	if username == "" || password == "" {
+	username, password, err := account.Credentials()
+	if err != nil {
 		return r.interrupt(ctx, job.ID, "NNTP credentials are unavailable")
 	}
 	client, err := r.Dial(ctx, nntp.Endpoint{Address: net.JoinHostPort(endpoint.Host, fmt.Sprint(endpoint.Port)), ServerName: endpoint.Host, TLS: endpoint.TLS, ConnectTimeout: 15 * time.Second, ReadTimeout: 30 * time.Second, OverviewCommand: endpoint.OverviewCommand})

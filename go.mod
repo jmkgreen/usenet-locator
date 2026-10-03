@@ -1,4 +1,4 @@
-module github.com/james/usenet-locator
+module github.com/jmkgreen/usenet-locator
 
 go 1.26.4
 

@@ -3,7 +3,7 @@ package indexing
 import (
 	"testing"
 
-	"github.com/james/usenet-locator/backend/internal/nntp"
+	"github.com/jmkgreen/usenet-locator/backend/internal/nntp"
 )
 
 func TestBatchValidation(t *testing.T) {

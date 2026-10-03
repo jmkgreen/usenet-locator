@@ -14,6 +14,7 @@ var ErrBodyNotCached = errors.New("article body is not cached")
 type BodyTarget struct {
 	ArticleID, ArticleNumber int64
 	EndpointID               string
+	Newsgroup                string
 }
 
 // BodyTarget returns one known endpoint-local location only when a new body
@@ -21,10 +22,12 @@ type BodyTarget struct {
 // caller can open an NNTP connection.
 func (s Store) BodyTarget(ctx context.Context, articleID int64) (BodyTarget, error) {
 	var target BodyTarget
-	err := s.pool.QueryRow(ctx, `SELECT al.article_id, al.article_number, al.endpoint_id
-        FROM article_locations al LEFT JOIN article_preferences p ON p.article_id = al.article_id
+	err := s.pool.QueryRow(ctx, `SELECT al.article_id, al.article_number, al.endpoint_id, ng.name
+        FROM article_locations al
+        JOIN newsgroups ng ON ng.id = al.newsgroup_id
+        LEFT JOIN article_preferences p ON p.article_id = al.article_id
         WHERE al.article_id = $1 AND al.available = true AND COALESCE(p.unwanted, false) = false
-        ORDER BY al.last_seen_at DESC LIMIT 1`, articleID).Scan(&target.ArticleID, &target.ArticleNumber, &target.EndpointID)
+		ORDER BY al.last_seen_at DESC LIMIT 1`, articleID).Scan(&target.ArticleID, &target.ArticleNumber, &target.EndpointID, &target.Newsgroup)
 	if errors.Is(err, pgx.ErrNoRows) {
 		var unwanted bool
 		checkErr := s.pool.QueryRow(ctx, `SELECT COALESCE(p.unwanted, false) FROM articles a LEFT JOIN article_preferences p ON p.article_id = a.id WHERE a.id = $1`, articleID).Scan(&unwanted)

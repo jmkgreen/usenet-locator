@@ -5,13 +5,18 @@ services:
       dockerfile: deploy/Dockerfile
     environment:
       USENET_LOCATOR_CONFIG: /config/config.json
-      USENET_LOCATOR_DATABASE_URL: postgresql://usenet_locator:${POSTGRES_PASSWORD:?set in .env}@db:5432/usenet_locator?sslmode=disable
-      USENET_LOCATOR_NNTP_USERNAME: ${NNTP_USERNAME:?set in .env}
-      USENET_LOCATOR_NNTP_PASSWORD: ${NNTP_PASSWORD:?set in .env}
     volumes:
       - ./config.local.json:/config/config.json:ro
+      - ./secrets:/run/secrets:ro
     ports:
       - "127.0.0.1:8080:8080"
+    secrets:
+      - nntp-provider-a-username
+      - nntp-provider-a-password
+      - nntp-provider-b-username
+      - nntp-provider-b-password
+      - nntp-provider-c-username
+      - nntp-provider-c-password
     depends_on:
       db:
         condition: service_healthy
@@ -20,7 +25,7 @@ services:
     environment:
       POSTGRES_DB: usenet_locator
       POSTGRES_USER: usenet_locator
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-password
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -30,5 +35,22 @@ services:
       retries: 5
     ports:
       - "127.0.0.1:5432:5432"
+    secrets:
+      - postgres-password
 volumes:
   postgres-data:
+secrets:
+  postgres-password:
+    file: ./secrets/postgres-password
+  nntp-provider-a-username:
+    file: ./secrets/nntp-provider-a-username
+  nntp-provider-a-password:
+    file: ./secrets/nntp-provider-a-password
+  nntp-provider-b-username:
+    file: ./secrets/nntp-provider-b-username
+  nntp-provider-b-password:
+    file: ./secrets/nntp-provider-b-password
+  nntp-provider-c-username:
+    file: ./secrets/nntp-provider-c-username
+  nntp-provider-c-password:
+    file: ./secrets/nntp-provider-c-password

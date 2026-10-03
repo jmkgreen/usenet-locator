@@ -10,8 +10,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/james/usenet-locator/backend/internal/jobs"
-	"github.com/james/usenet-locator/backend/internal/nntp"
+	"github.com/jmkgreen/usenet-locator/backend/internal/jobs"
+	"github.com/jmkgreen/usenet-locator/backend/internal/nntp"
 )
 
 var ErrJobNotRunning = errors.New("job is not running")

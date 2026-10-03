@@ -7,13 +7,12 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"os"
 	"time"
 
-	"github.com/james/usenet-locator/backend/internal/accounts"
-	"github.com/james/usenet-locator/backend/internal/articles"
-	"github.com/james/usenet-locator/backend/internal/config"
-	"github.com/james/usenet-locator/backend/internal/nntp"
+	"github.com/jmkgreen/usenet-locator/backend/internal/accounts"
+	"github.com/jmkgreen/usenet-locator/backend/internal/articles"
+	"github.com/jmkgreen/usenet-locator/backend/internal/config"
+	"github.com/jmkgreen/usenet-locator/backend/internal/nntp"
 )
 
 type Store interface {
@@ -24,6 +23,7 @@ type Store interface {
 
 type Fetcher interface {
 	GetOrFetch(context.Context, int64) (string, error)
+	GetCached(context.Context, int64) (string, error)
 }
 type DialFunc func(context.Context, nntp.Endpoint) (nntp.Client, error)
 
@@ -72,8 +72,8 @@ func (s Service) GetOrFetch(ctx context.Context, articleID int64) (string, error
 		return "", fmt.Errorf("NNTP account connection limit unavailable: %w", err)
 	}
 	defer release()
-	username, password := os.Getenv(account.UsernameFromEnv), os.Getenv(account.PasswordFromEnv)
-	if username == "" || password == "" {
+	username, password, err := account.Credentials()
+	if err != nil {
 		return "", fmt.Errorf("NNTP credentials are unavailable")
 	}
 	if s.dial == nil || s.maxBytes < 1 {
@@ -89,6 +89,11 @@ func (s Service) GetOrFetch(ctx context.Context, articleID int64) (string, error
 	}
 	if err := client.ModeReader(ctx); err != nil {
 		return "", fmt.Errorf("enter reader mode: %w", err)
+	}
+	// NNTP article numbers are scoped to a selected newsgroup.  Locations keep
+	// both values, so select that group before issuing BODY <article-number>.
+	if _, err := client.Group(ctx, target.Newsgroup); err != nil {
+		return "", fmt.Errorf("select body source group: %w", err)
 	}
 	var body bytes.Buffer
 	if err := client.Body(ctx, target.ArticleNumber, s.maxBytes, &body); err != nil {
@@ -109,6 +114,12 @@ func (s Service) GetOrFetch(ctx context.Context, articleID int64) (string, error
 		return "", err
 	}
 	return body.String(), nil
+}
+
+// GetCached returns text already retained locally. It deliberately has no
+// fallback to NNTP, making it safe for download endpoints and repeat access.
+func (s Service) GetCached(ctx context.Context, articleID int64) (string, error) {
+	return s.store.CachedBody(ctx, articleID)
 }
 
 func transferBytes(client nntp.Client) (int64, bool) {

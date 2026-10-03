@@ -1,13 +1,13 @@
 {
   "database": {
-    "url_from_env": "USENET_LOCATOR_DATABASE_URL",
+    "url_file": "/run/secrets/database-url",
     "max_conns": 4
   },
   "accounts": [
     {
       "id": "primary",
-      "username_from_env": "USENET_LOCATOR_NNTP_USERNAME",
-      "password_from_env": "USENET_LOCATOR_NNTP_PASSWORD",
+      "username_file": "/run/secrets/nntp-primary-username",
+      "password_file": "/run/secrets/nntp-primary-password",
       "connection_limit": 1
     }
   ],

@@ -27,5 +27,12 @@ The storage/coverage view separates locally stored newsgroups from
 endpoint-specific scan evidence. A complete interval on one endpoint is not a
 claim of completeness on another provider.
 
+Use the **Retention watchlist** for groups whose retention should be checked
+regularly. Choose an interval between one hour and seven days. While the
+service is running, due entries receive the same bounded retention probe as
+**Find earliest**; the check records the earliest retained header and the
+current provider group bounds. Failed checks remain due for a later retry.
+Adding, changing, or removing an entry does not contact a provider.
+
 The provider view shows configured endpoints along with active/allowed account
 connections and transfer usage. It never exposes provider credentials.

@@ -3,12 +3,19 @@
 ## Reference Compose deployment
 
 Copy `deploy/config.example.json` to a private configuration file and replace
-the placeholder NNTP host and endpoint ID. Create a private `.env` beside the
-Compose file with `POSTGRES_PASSWORD`, `NNTP_USERNAME`, and `NNTP_PASSWORD`.
-Do not commit either file. Start the reference stack with:
+the placeholder NNTP host and endpoint ID. Copy `deploy/compose.yaml` to
+`deploy/compose.local.yaml` and replace its generic provider secret names with
+the names used by the private configuration. Create the private
+`deploy/secrets/` directory containing one newline-terminated file per secret.
+The stack needs `postgres-password`, `database-url`, plus every NNTP username
+and password file named by your configuration. `database-url` is the app's
+PostgreSQL connection string and must use the same password as
+`postgres-password` when connecting to the bundled database. Do not commit the
+local Compose file, configuration, or any secret files. Start the local stack
+with:
 
 ```text
-docker compose -f deploy/compose.yaml up --build
+docker compose -f deploy/compose.local.yaml up --build
 ```
 
 The reference ports bind to loopback only: the application is on `8080` and
@@ -21,19 +28,22 @@ PostgreSQL volume before upgrades and verify `/readyz` after deployment.
 
 ## Shared PostgreSQL
 
-For an external PostgreSQL instance, omit the Compose `db` service and set
-`USENET_LOCATOR_DATABASE_URL` to an application-scoped connection string. The
-application only creates its own tables and migration ledger; it does not alter
-server-wide PostgreSQL settings. Keep the pool small (`max_conns: 4` is the
-reference value) when the database is shared.
+For an external PostgreSQL instance, omit the Compose `db` service and mount a
+file containing an application-scoped connection string. Point `database.url_file`
+at that mounted path. The application only creates its own tables and migration
+ledger; it does not alter server-wide PostgreSQL settings. Keep the pool small
+(`max_conns: 4` is the reference value) when the database is shared.
 
 ## Secrets and TLS
 
-Configuration names environment variables but never contains their values.
-Supply the database URL and NNTP username/password with Docker/TrueNAS secrets
-or private environment variables. The application requires TLS unless the
-specific endpoint has an explicit plaintext acknowledgement. It never retries a
-failed TLS connection as plaintext.
+Configuration names secret-file paths but never contains their values. Supply
+the database URL and each NNTP account's username/password as separate mounted
+secret files; Docker Compose, TrueNAS, and Kubernetes all support this model.
+Provider account IDs and endpoint details remain ordinary private configuration,
+which allows one account to own multiple endpoints without multiplying secret
+variables. The application requires TLS unless the specific endpoint has an
+explicit plaintext acknowledgement. It never retries a failed TLS connection as
+plaintext.
 
 Most endpoints use the default overview behaviour (`"overview_command":
 "auto"` or omitted), which sends `OVER` and has a bounded legacy fallback.
@@ -79,16 +89,27 @@ that omit a weekday. If a qualification response reports overview rows but no
 parseable dates, stop before launching a broad scan and add a transcript test
 for the observed date form.
 
-## Supplementary scans
+## Provider fan-out and supplementary scans
+
+Every normal header-range request creates one non-dispatchable parent record
+and one endpoint-local child job for each enabled configured provider account.
+The parent status aggregates the child counts and states; child failures do not
+discard headers already retained from another provider. The dispatcher applies
+the existing per-account connection permits and transfer quotas independently
+to each child. Removed endpoints are disabled during configuration sync and
+receive no new fan-out work, while their historical coverage remains visible.
+
+An optional request-level transfer budget is divided evenly among the child
+jobs (and must be at least one byte per enabled endpoint), so the combined
+child allowance never exceeds the requested budget.
 
 Create a supplementary scan only when an operator identifies a specific
-endpoint-local missing range or failed batch. Select the supplementary endpoint,
-provide the original job ID as the source job, and set a conservative optional
-job budget in bytes. The budget is additional to the provider account quota: a
-job stops with `job transfer budget reached` when its measured NNTP traffic
-crosses the configured allowance. Article numbers are never reused across
-providers; the supplementary endpoint independently resolves the requested date
-range and records separate coverage and locations.
+endpoint-local missing range or failed batch. Provide the original job ID as the
+source job and set a conservative optional budget. The budget is additional to
+the provider account quota: each child stops with `job transfer budget reached`
+when its allotted measured NNTP traffic crosses the allowance. Article numbers
+are never reused across providers; each endpoint independently resolves the
+requested date range and records separate coverage and locations.
 
 ## VPN mode
 

@@ -1,11 +1,15 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func validConfig() Config {
 	return Config{
-		Database:  DatabaseConfig{URLFromEnv: "USENET_LOCATOR_DATABASE_URL", MaxConns: 4},
-		Accounts:  []AccountConfig{{ID: "primary", UsernameFromEnv: "USENET_LOCATOR_NNTP_USER", PasswordFromEnv: "USENET_LOCATOR_NNTP_PASSWORD", ConnectionLimit: 1}},
+		Database:  DatabaseConfig{URLFile: "database-url", MaxConns: 4},
+		Accounts:  []AccountConfig{{ID: "primary", UsernameFile: "nntp-user", PasswordFile: "nntp-password", ConnectionLimit: 1}},
 		Endpoints: []EndpointConfig{{ID: "primary-eu", AccountID: "primary", Host: "news.example.test", Port: 563, TLS: true, Primary: true}},
 		Resources: ResourceConfig{ActiveJobs: 1, WorkersPerJob: 1, BatchSize: 250, MaxBodyBytes: 5_000_000},
 	}
@@ -50,5 +54,16 @@ func TestValidateAllowsOnlyKnownOverviewCommands(t *testing.T) {
 	cfg.Endpoints[0].OverviewCommand = "unsupported"
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate() accepted an unknown overview command")
+	}
+}
+
+func TestReadSecretFileTrimsMountedSecretNewline(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(path, []byte("secret-value\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	value, err := ReadSecretFile(path)
+	if err != nil || value != "secret-value" {
+		t.Fatalf("ReadSecretFile() = %q, %v", value, err)
 	}
 }

@@ -18,10 +18,12 @@ type SearchRequest struct {
 }
 
 type SearchResult struct {
-	ID                         int64
-	MessageID, Subject, Author string
-	Date                       *time.Time
-	Unwanted                   bool
+	ID        int64      `json:"id"`
+	MessageID string     `json:"message_id"`
+	Subject   string     `json:"subject"`
+	Author    string     `json:"author"`
+	Date      *time.Time `json:"date"`
+	Unwanted  bool       `json:"unwanted"`
 }
 
 type SearchPage struct {

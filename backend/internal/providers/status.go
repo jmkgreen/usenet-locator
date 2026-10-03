@@ -6,8 +6,8 @@ import (
 	"context"
 	"sort"
 
-	"github.com/james/usenet-locator/backend/internal/accounts"
-	"github.com/james/usenet-locator/backend/internal/config"
+	"github.com/jmkgreen/usenet-locator/backend/internal/accounts"
+	"github.com/jmkgreen/usenet-locator/backend/internal/config"
 )
 
 type Endpoint struct {

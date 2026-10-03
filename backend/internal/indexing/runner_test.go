@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/james/usenet-locator/backend/internal/jobs"
-	"github.com/james/usenet-locator/backend/internal/nntp"
+	"github.com/jmkgreen/usenet-locator/backend/internal/jobs"
+	"github.com/jmkgreen/usenet-locator/backend/internal/nntp"
 )
 
 type fakeFinalizer struct {

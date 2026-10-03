@@ -33,24 +33,23 @@ The first usable release is primarily a **historical header indexer and text res
 
 The design SHALL distinguish accounts, endpoints, and indexing sources. Multiple endpoints may share credentials, connection limits, or usage quotas.
 
-Initial known endpoints are:
+Example endpoint layout:
 
-| Provider/account | Endpoint | Existing SABnzbd priority (reference only) |
+| Provider/account | Endpoint | Example operator priority (reference only) |
 |---|---|---:|
-| Newshosting | `news.newshosting.com` | 1 |
-| Newshosting | `news-nl.newshosting.com` | 2 |
-| NewsgroupDirect | `eu-tst.newsgroupdirect.com` | 5 |
-| NewsgroupDirect | `news.newsgroupdirect.com` | 5 |
-| Tweaknews | `newshosting.tweaknews.eu` | 5 |
-| Easynews | `secure-eu.news.easynews.com` | 10 |
+| Provider A | `news.provider-a.example` | 1 |
+| Provider A | `eu.provider-a.example` | 2 |
+| Provider B | `news.provider-b.example` | 5 |
+| Provider B | `eu.provider-b.example` | 5 |
+| Provider C | `news.provider-c.example` | 5 |
 
-These priorities are reference information and do not require duplication of SABnzbd's selection algorithm.
+These priorities are reference information and do not require duplication of another client's selection algorithm.
 
 Requirements:
 
 - Configure a primary indexing endpoint.
-- Support an ordered endpoint preference for scanning and later retrieval. The initial ordering may reflect expected article completeness and provider knowledge; it need not duplicate SABnzbd's selection algorithm.
-- Configure connection limits per account independently of SABnzbd.
+- Support an ordered endpoint preference for scanning and later retrieval. The initial ordering may reflect expected article completeness and provider knowledge; it need not duplicate another client's selection algorithm.
+- Configure connection limits per account independently of other clients.
 - Support provider-required credentials.
 - Support configurable monthly or total transfer allowances for metered accounts and suspend use when a configured limit is reached.
 - Retry transient endpoint failures sensibly; if an endpoint must be paused, unrelated work that can safely continue MAY continue.

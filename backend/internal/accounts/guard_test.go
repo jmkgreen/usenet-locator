@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/james/usenet-locator/backend/internal/config"
+	"github.com/jmkgreen/usenet-locator/backend/internal/config"
 )
 
 func TestGuardHonoursAccountConnectionLimit(t *testing.T) {

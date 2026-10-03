@@ -51,10 +51,22 @@ type Job struct {
 	TransferUsedBytes  int64
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
+	ProviderJobs       []ProviderJob
+}
+
+// ProviderJob is a safe, endpoint-specific child status for a fan-out request.
+type ProviderJob struct {
+	Endpoint          string  `json:"endpoint"`
+	State             State   `json:"state"`
+	HeadersRetrieved  int64   `json:"headers_retrieved"`
+	ArticlesStored    int64   `json:"articles_stored"`
+	TransferUsedBytes int64   `json:"transfer_used_bytes"`
+	LastError         *string `json:"last_error"`
 }
 
 var ErrNotFound = errors.New("job not found")
 var ErrInvalidTransition = errors.New("invalid job state transition")
+var ErrUnknownEndpoint = errors.New("configured endpoint does not exist")
 
 // Creator is the minimum job dependency needed to accept a new request.
 // Keeping this contract here lets HTTP stay independent of PostgreSQL.

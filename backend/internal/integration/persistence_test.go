@@ -11,14 +11,14 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/james/usenet-locator/backend/internal/accounts"
-	"github.com/james/usenet-locator/backend/internal/articles"
-	"github.com/james/usenet-locator/backend/internal/config"
-	"github.com/james/usenet-locator/backend/internal/database"
-	"github.com/james/usenet-locator/backend/internal/indexing"
-	"github.com/james/usenet-locator/backend/internal/jobs"
-	"github.com/james/usenet-locator/backend/internal/nntp"
-	"github.com/james/usenet-locator/backend/internal/qualification"
+	"github.com/jmkgreen/usenet-locator/backend/internal/accounts"
+	"github.com/jmkgreen/usenet-locator/backend/internal/articles"
+	"github.com/jmkgreen/usenet-locator/backend/internal/config"
+	"github.com/jmkgreen/usenet-locator/backend/internal/database"
+	"github.com/jmkgreen/usenet-locator/backend/internal/indexing"
+	"github.com/jmkgreen/usenet-locator/backend/internal/jobs"
+	"github.com/jmkgreen/usenet-locator/backend/internal/nntp"
+	"github.com/jmkgreen/usenet-locator/backend/internal/qualification"
 )
 
 func TestPersistenceWorkflow(t *testing.T) {
@@ -47,7 +47,7 @@ func TestPersistenceWorkflow(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 	limit := int64(10)
-	cfg := config.Config{Database: config.DatabaseConfig{URLFromEnv: "USENET_LOCATOR_DATABASE_URL", MaxConns: 4}, Accounts: []config.AccountConfig{{ID: "account", UsernameFromEnv: "USENET_LOCATOR_NNTP_USERNAME", PasswordFromEnv: "USENET_LOCATOR_NNTP_PASSWORD", ConnectionLimit: 1, TransferLimitBytes: &limit}}, Endpoints: []config.EndpointConfig{{ID: "primary", AccountID: "account", Host: "news.example.test", Port: 563, TLS: true, Primary: true}}, Resources: config.ResourceConfig{ActiveJobs: 1, WorkersPerJob: 1, BatchSize: 10, MaxBodyBytes: 1024}}
+	cfg := config.Config{Database: config.DatabaseConfig{URLFile: "database-url", MaxConns: 4}, Accounts: []config.AccountConfig{{ID: "account", UsernameFile: "nntp-user", PasswordFile: "nntp-password", ConnectionLimit: 1, TransferLimitBytes: &limit}}, Endpoints: []config.EndpointConfig{{ID: "primary", AccountID: "account", Host: "news.example.test", Port: 563, TLS: true, Primary: true}}, Resources: config.ResourceConfig{ActiveJobs: 1, WorkersPerJob: 1, BatchSize: 10, MaxBodyBytes: 1024}}
 	if err := db.SyncConfiguration(ctx, cfg); err != nil {
 		t.Fatalf("sync configuration: %v", err)
 	}

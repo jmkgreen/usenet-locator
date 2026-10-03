@@ -17,14 +17,14 @@ type Config struct {
 }
 
 type DatabaseConfig struct {
-	URLFromEnv string `json:"url_from_env"`
-	MaxConns   int32  `json:"max_conns"`
+	URLFile  string `json:"url_file"`
+	MaxConns int32  `json:"max_conns"`
 }
 
 type AccountConfig struct {
 	ID                 string `json:"id"`
-	UsernameFromEnv    string `json:"username_from_env"`
-	PasswordFromEnv    string `json:"password_from_env"`
+	UsernameFile       string `json:"username_file"`
+	PasswordFile       string `json:"password_file"`
 	ConnectionLimit    int    `json:"connection_limit"`
 	TransferLimitBytes *int64 `json:"transfer_limit_bytes,omitempty"`
 }
@@ -67,7 +67,7 @@ func Load(path string) (Config, error) {
 }
 
 func (c Config) Validate() error {
-	if err := requireEnvReference("database.url_from_env", c.Database.URLFromEnv); err != nil {
+	if err := requireSecretFile("database.url_file", c.Database.URLFile); err != nil {
 		return err
 	}
 	if c.Database.MaxConns < 1 || c.Database.MaxConns > 32 {
@@ -88,10 +88,10 @@ func (c Config) Validate() error {
 		if _, exists := accounts[account.ID]; exists {
 			return fmt.Errorf("duplicate account id %q", account.ID)
 		}
-		if err := requireEnvReference("account.username_from_env", account.UsernameFromEnv); err != nil {
+		if err := requireSecretFile("account.username_file", account.UsernameFile); err != nil {
 			return err
 		}
-		if err := requireEnvReference("account.password_from_env", account.PasswordFromEnv); err != nil {
+		if err := requireSecretFile("account.password_file", account.PasswordFile); err != nil {
 			return err
 		}
 		if account.TransferLimitBytes != nil && *account.TransferLimitBytes < 1 {
@@ -129,9 +129,37 @@ func (c Config) Validate() error {
 	return nil
 }
 
-func requireEnvReference(field, value string) error {
-	if value == "" || !strings.HasPrefix(value, "USENET_LOCATOR_") {
-		return fmt.Errorf("%s must be a USENET_LOCATOR_ environment-variable reference", field)
+// ReadSecretFile reads a single mounted secret value. It trims the trailing
+// newline commonly added by Docker, Kubernetes, and TrueNAS secret mounts.
+func ReadSecretFile(path string) (string, error) {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read secret file: %w", err)
+	}
+	value := strings.TrimSpace(string(contents))
+	if value == "" {
+		return "", fmt.Errorf("secret file is empty")
+	}
+	return value, nil
+}
+
+// Credentials resolves an account's credentials at connection time. Resolved
+// values are never stored in the configuration or database.
+func (a AccountConfig) Credentials() (string, string, error) {
+	username, err := ReadSecretFile(a.UsernameFile)
+	if err != nil {
+		return "", "", fmt.Errorf("read username: %w", err)
+	}
+	password, err := ReadSecretFile(a.PasswordFile)
+	if err != nil {
+		return "", "", fmt.Errorf("read password: %w", err)
+	}
+	return username, password, nil
+}
+
+func requireSecretFile(field, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("%s is required", field)
 	}
 	return nil
 }

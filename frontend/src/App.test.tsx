@@ -48,18 +48,53 @@ test("job controls, result marks, reader retrieval, and providers use the API", 
     if (url === "/api/v1/providers/primary/qualifications") return new Response(JSON.stringify({ qualifications: [{ endpoint: "primary", created_at: "2026-09-30T00:00:00Z", result: { capabilities: ["READER"], overview_code: 224, overview_rows: 1, overview_dates: 1 } }] }), { status: 200 });
     if (url === "/api/v1/newsgroups") return new Response(JSON.stringify({ newsgroups: [{ name: "comp.lang.go", articles: 2 }] }), { status: 200 });
     if (url === "/api/v1/coverage") return new Response(JSON.stringify({ coverage: [{ endpoint: "primary", newsgroup: "comp.lang.go", state: "complete", article_number_start: 1, article_number_end: 2 }] }), { status: 200 });
+		if (url === "/api/v1/newsgroups/comp.lang.go/retention-probe") return new Response(JSON.stringify({ observations: [{ endpoint: "primary", newsgroup: "comp.lang.go", article_id: 4, observed_date: "2000-01-01T00:00:00Z", outcome: "found", observed_at: "2026-10-01T00:00:00Z" }] }), { status: 200 });
+		if (url === "/api/v1/newsgroups/comp.lang.go/retention") return new Response(JSON.stringify({ observations: [{ endpoint: "primary", newsgroup: "comp.lang.go", article_id: 4, observed_date: "2000-01-01T00:00:00Z", outcome: "found", observed_at: "2026-10-01T00:00:00Z" }] }), { status: 200 });
+		if (url === "/api/v1/newsgroups/comp.lang.go/oldest-headers?limit=10") return new Response(JSON.stringify({ newsgroup: "comp.lang.go", limit: 10 }), { status: 202 });
     return new Response("{}", { status: 500 });
   });
   vi.stubGlobal("fetch", fetchMock);
   await act(async () => { root.render(<App />); });
   const dates = document.querySelectorAll('input[type="date"]') as NodeListOf<HTMLInputElement>;
-  await act(async () => { setValue(dates[0], "2020-01-01"); setValue(dates[1], "2020-01-02"); });
+  const newsgroup = document.querySelector('input[placeholder="e.g. alt.test"]') as HTMLInputElement;
+  await act(async () => { setValue(newsgroup, "comp.lang.go"); setValue(dates[0], "2020-01-01"); setValue(dates[1], "2020-01-02"); });
   await click("Queue job"); await click("Pause"); await click("Resume"); await click("Cancel");
   await click("Search"); await click("Load more");
   await act(async () => { (document.querySelector('input[aria-label="Select <a@test>"]') as HTMLInputElement).click(); });
-  await click("Mark selected unwanted"); await click("Search"); await click("A subject"); await click("Retrieve text"); await click("Show configured endpoints"); await click("Show history"); await click("Show stored groups and coverage");
+  await click("Mark selected unwanted"); await click("Search"); await click("A subject"); await click("Retrieve text"); await click("Show configured endpoints"); await click("Show history"); await click("Show stored groups and coverage"); await click("comp.lang.go"); await click("Find earliest"); await click("Retrieve oldest headers"); await click("Browse chronologically");
   expect(document.body.textContent).toContain("body text");
   expect(document.body.textContent).toContain("news.example:563");
-  expect(document.body.textContent).toContain("comp.lang.go (2)");
-  expect(document.body.textContent).toContain("Provider qualification history");
+  expect(document.body.textContent).toContain("Earliest observed: comp.lang.go");
+	expect(document.body.textContent).toContain("Open earliest");
+	expect(document.body.textContent).toContain("Provider qualification history");
+});
+
+test("watchlist can be displayed, saved, opened, and removed", async () => {
+  let groups = [{ newsgroup: "alt.watch", interval_hours: 12, last_checked_at: null, next_check_at: "2026-10-03T00:00:00Z" }];
+  const fetchMock = vi.fn(async (input: string | URL, options?: RequestInit) => {
+    const url = String(input); const method = options?.method ?? "GET";
+    if (url === "/api/v1/watchlist" && method === "GET") return new Response(JSON.stringify({ watchlist: groups }), { status: 200 });
+    if (url === "/api/v1/watchlist" && method === "POST") { groups = [{ newsgroup: "alt.new", interval_hours: 24, last_checked_at: null, next_check_at: "2026-10-03T00:00:00Z" }]; return new Response(JSON.stringify(groups[0]), { status: 201 }); }
+    if (url === "/api/v1/watchlist/alt.new" && method === "DELETE") return new Response(null, { status: 204 });
+    if (url === "/api/v1/newsgroups/alt.watch/retention") return new Response(JSON.stringify({ observations: [] }), { status: 200 });
+    return new Response(JSON.stringify({ watchlist: [] }), { status: 200 });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  await act(async () => { root.render(<App />); });
+  await click("Show watchlist");
+  expect(document.body.textContent).toContain("alt.watch");
+  await click("alt.watch");
+  const watchInput = document.querySelector('form[aria-label="Add watchlist group"] input[placeholder="e.g. alt.test"]') as HTMLInputElement;
+  await act(async () => { setValue(watchInput, "alt.new"); });
+  await click("Add to watchlist");
+  expect(document.body.textContent).toContain("alt.new");
+  await click("Remove");
+  expect(document.body.textContent).not.toContain("alt.new");
+});
+
+test("watchlist failures are shown to the operator", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: "unavailable" }), { status: 500 })));
+  await act(async () => { root.render(<App />); });
+  await click("Show watchlist");
+  expect(document.body.textContent).toContain("unavailable");
 });

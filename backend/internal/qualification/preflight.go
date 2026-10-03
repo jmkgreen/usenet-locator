@@ -5,13 +5,12 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"os"
 	"strings"
 	"time"
 
-	"github.com/james/usenet-locator/backend/internal/accounts"
-	"github.com/james/usenet-locator/backend/internal/config"
-	"github.com/james/usenet-locator/backend/internal/nntp"
+	"github.com/jmkgreen/usenet-locator/backend/internal/accounts"
+	"github.com/jmkgreen/usenet-locator/backend/internal/config"
+	"github.com/jmkgreen/usenet-locator/backend/internal/nntp"
 )
 
 type Result struct {
@@ -59,8 +58,8 @@ func (s Service) Run(ctx context.Context, endpointID, messageID, group string, a
 		return result, fmt.Errorf("connection limit unavailable")
 	}
 	defer release()
-	u, p := os.Getenv(a.UsernameFromEnv), os.Getenv(a.PasswordFromEnv)
-	if u == "" || p == "" {
+	u, p, err := a.Credentials()
+	if err != nil {
 		return result, fmt.Errorf("credentials unavailable")
 	}
 	c, err := s.Dial(ctx, nntp.Endpoint{Address: net.JoinHostPort(e.Host, fmt.Sprint(e.Port)), ServerName: e.Host, TLS: e.TLS, ConnectTimeout: 15 * time.Second, ReadTimeout: 30 * time.Second})
