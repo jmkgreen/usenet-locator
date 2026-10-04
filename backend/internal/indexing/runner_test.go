@@ -26,11 +26,14 @@ type fakeJobQuota struct {
 	err      error
 }
 
-type fakeAccountQuota struct{ consumed int64 }
+type fakeAccountQuota struct {
+	consumed int64
+	err      error
+}
 
 func (f *fakeAccountQuota) Consume(_ context.Context, _ string, bytes int64) error {
 	f.consumed += bytes
-	return nil
+	return f.err
 }
 
 func (f *fakeJobQuota) ConsumeTransfer(_ context.Context, _ string, bytes int64) error {
@@ -79,6 +82,22 @@ func TestRecordTransferStopsAtJobBudget(t *testing.T) {
 	err := runner.recordTransfer(context.Background(), "account", "job", 123)
 	if !errors.Is(err, jobs.ErrTransferLimitExceeded) || quota.consumed != 123 {
 		t.Fatalf("record transfer = %v, quota = %#v", err, quota)
+	}
+}
+
+func TestRecordTransferHonoursAccountAndZeroTrafficBoundaries(t *testing.T) {
+	accountQuota := &fakeAccountQuota{err: accounts.ErrQuotaExceeded}
+	jobQuota := &fakeJobQuota{}
+	runner := Runner{Quota: accountQuota, JobQuota: jobQuota}
+	if err := runner.recordTransfer(context.Background(), "account", "job", 0); err != nil || accountQuota.consumed != 0 || jobQuota.consumed != 0 {
+		t.Fatalf("zero transfer err=%v account=%d job=%d", err, accountQuota.consumed, jobQuota.consumed)
+	}
+	if err := runner.recordTransfer(context.Background(), "account", "job", 7); !errors.Is(err, accounts.ErrQuotaExceeded) || jobQuota.consumed != 0 {
+		t.Fatalf("account failure err=%v job=%d", err, jobQuota.consumed)
+	}
+	accountQuota.err = nil
+	if err := runner.recordTransfer(context.Background(), "account", "job", 5); err != nil || accountQuota.consumed != 12 || jobQuota.consumed != 5 {
+		t.Fatalf("successful transfer err=%v account=%d job=%d", err, accountQuota.consumed, jobQuota.consumed)
 	}
 }
 
