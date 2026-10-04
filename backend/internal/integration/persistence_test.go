@@ -179,6 +179,43 @@ func TestPersistenceWorkflow(t *testing.T) {
 	if err := watchlistStore.Remove(ctx, "comp.watched"); err != nil {
 		t.Fatalf("remove watchlist item: %v", err)
 	}
+	transferBudget := int64(5)
+	parentID, err := jobStore.Create(ctx, jobs.CreateRequest{NewsgroupID: "comp.lifecycle", EndpointID: "primary", StartDate: date, EndDate: date, MarginDays: 0, TransferLimitBytes: &transferBudget})
+	if err != nil {
+		t.Fatalf("create lifecycle job: %v", err)
+	}
+	child, claimed, err := jobStore.ClaimNext(ctx)
+	if err != nil || !claimed {
+		t.Fatalf("claim lifecycle child = %#v, %v, %v", child, claimed, err)
+	}
+	if err := jobStore.ConsumeTransfer(ctx, child.ID, 3); err != nil {
+		t.Fatalf("consume job transfer: %v", err)
+	}
+	if err := jobStore.ConsumeTransfer(ctx, child.ID, 3); !errors.Is(err, jobs.ErrTransferLimitExceeded) {
+		t.Fatalf("transfer budget error = %v", err)
+	}
+	parent, err := jobStore.Get(ctx, parentID)
+	if err != nil || parent.State != jobs.Running || len(parent.ProviderJobs) != 1 || parent.TransferUsedBytes != 6 {
+		t.Fatalf("running parent = %#v, err = %v", parent, err)
+	}
+	if err := jobStore.Transition(ctx, parentID, jobs.Paused); err != nil {
+		t.Fatalf("pause fan-out parent: %v", err)
+	}
+	if paused, err := jobStore.Get(ctx, child.ID); err != nil || paused.State != jobs.Paused {
+		t.Fatalf("paused child = %#v, err = %v", paused, err)
+	}
+	if err := jobStore.Transition(ctx, parentID, jobs.Queued); err != nil {
+		t.Fatalf("resume fan-out parent: %v", err)
+	}
+	if resumed, ok, err := jobStore.ClaimNext(ctx); err != nil || !ok || resumed.ID != child.ID {
+		t.Fatalf("resumed child = %#v, %v, %v", resumed, ok, err)
+	}
+	if err := jobStore.Transition(ctx, parentID, jobs.Cancelled); err != nil {
+		t.Fatalf("cancel fan-out parent: %v", err)
+	}
+	if cancelled, err := jobStore.Get(ctx, parentID); err != nil || cancelled.State != jobs.Cancelled {
+		t.Fatalf("cancelled parent = %#v, err = %v", cancelled, err)
+	}
 }
 
 func createAndClaim(t *testing.T, ctx context.Context, store jobs.Store, group string, date time.Time) string {
