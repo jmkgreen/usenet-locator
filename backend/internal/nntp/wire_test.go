@@ -258,3 +258,33 @@ func TestBodyRejectsResponseAboveLimit(t *testing.T) {
 		t.Fatal("Body() accepted an oversized response")
 	}
 }
+
+func TestAuthenticateAndTransferAccounting(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	go func() {
+		defer serverConn.Close()
+		r, w := bufio.NewReader(serverConn), bufio.NewWriter(serverConn)
+		if line, _ := r.ReadString('\n'); line != "AUTHINFO USER operator\r\n" {
+			return
+		}
+		_, _ = w.WriteString("381 password required\r\n")
+		_ = w.Flush()
+		if line, _ := r.ReadString('\n'); line != "AUTHINFO PASS secret\r\n" {
+			return
+		}
+		_, _ = w.WriteString("281 authenticated\r\n")
+		_ = w.Flush()
+	}()
+	meter := &countingConn{Conn: clientConn}
+	c := &wireClient{conn: meter, text: textproto.NewConn(meter), ep: Endpoint{ReadTimeout: time.Second}, meter: meter}
+	if err := c.Authenticate(context.Background(), "operator", "secret"); err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+	if c.TransferBytes() <= 0 {
+		t.Fatal("authentication traffic was not metered")
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+}
