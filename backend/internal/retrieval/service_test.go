@@ -52,6 +52,13 @@ func (f *fakeClient) Body(_ context.Context, number, _ int64, destination io.Wri
 }
 func (f *fakeClient) Close() error { return nil }
 
+type quotaRecorder struct{ bytes int64 }
+
+func (q *quotaRecorder) Consume(_ context.Context, _ string, bytes int64) error {
+	q.bytes += bytes
+	return nil
+}
+
 func TestGetOrFetchReturnsCacheBeforeEligibilityCheck(t *testing.T) {
 	service := Service{store: &fakeStore{cached: "already cached"}}
 	body, err := service.GetOrFetch(context.Background(), 4)
@@ -91,5 +98,40 @@ func TestGetOrFetchSelectsLocationNewsgroupBeforeBody(t *testing.T) {
 	body, err := service.GetOrFetch(context.Background(), 4)
 	if err != nil || body != "body text" || store.saved != "body text" || client.group != "alt.test" {
 		t.Fatalf("body = %q, saved = %q, group = %q, err = %v", body, store.saved, client.group, err)
+	}
+}
+
+func TestGetOrFetchRejectsUnavailableSourceBeforeDialling(t *testing.T) {
+	store := &fakeStore{cacheErr: articles.ErrBodyNotCached, target: articles.BodyTarget{ArticleID: 4, EndpointID: "missing"}}
+	service := Service{store: store, endpoints: map[string]config.EndpointConfig{}, accounts: map[string]config.AccountConfig{}}
+	if _, err := service.GetOrFetch(context.Background(), 4); err == nil || err.Error() != "body source endpoint is unavailable" {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestGetOrFetchChargesBodySizeWhenAdapterCannotMeasureTransfer(t *testing.T) {
+	dir := t.TempDir()
+	username, password := filepath.Join(dir, "username"), filepath.Join(dir, "password")
+	if err := os.WriteFile(username, []byte("user\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(password, []byte("password\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{Accounts: []config.AccountConfig{{ID: "account", UsernameFile: username, PasswordFile: password, ConnectionLimit: 1}}, Endpoints: []config.EndpointConfig{{ID: "endpoint", AccountID: "account", Host: "news.example", Port: 563, TLS: true}}, Resources: config.ResourceConfig{MaxBodyBytes: 1024}}
+	store := &fakeStore{cacheErr: articles.ErrBodyNotCached, target: articles.BodyTarget{ArticleID: 4, ArticleNumber: 17, EndpointID: "endpoint", Newsgroup: "alt.test"}}
+	quota := &quotaRecorder{}
+	service := New(cfg, store, accounts.NewGuard(cfg), quota)
+	service.dial = func(context.Context, nntp.Endpoint) (nntp.Client, error) { return &fakeClient{}, nil }
+	body, err := service.GetOrFetch(context.Background(), 4)
+	if err != nil || body != "body text" || quota.bytes != int64(len(body)) || store.saved != body {
+		t.Fatalf("body=%q quota=%d saved=%q err=%v", body, quota.bytes, store.saved, err)
+	}
+}
+
+func TestGetCachedNeverFallsBackToNetwork(t *testing.T) {
+	service := Service{store: &fakeStore{cached: "stored only"}}
+	if body, err := service.GetCached(context.Background(), 4); err != nil || body != "stored only" {
+		t.Fatalf("body=%q err=%v", body, err)
 	}
 }
