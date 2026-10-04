@@ -17,11 +17,14 @@ type fakeClient struct {
 	overviewFailures int
 	overviewCalls    int
 	transferBytes    int64
+	authenticateErr  error
+	capabilitiesErr  error
+	modeReaderErr    error
 }
 
-func (f fakeClient) Authenticate(context.Context, string, string) error { return nil }
-func (f fakeClient) Capabilities(context.Context) ([]string, error)     { return nil, nil }
-func (f fakeClient) ModeReader(context.Context) error                   { return nil }
+func (f *fakeClient) Authenticate(context.Context, string, string) error { return f.authenticateErr }
+func (f *fakeClient) Capabilities(context.Context) ([]string, error)     { return nil, f.capabilitiesErr }
+func (f *fakeClient) ModeReader(context.Context) error                   { return f.modeReaderErr }
 func (f *fakeClient) Group(context.Context, string) (nntp.Group, error) {
 	f.transferBytes += 3
 	return f.group, nil

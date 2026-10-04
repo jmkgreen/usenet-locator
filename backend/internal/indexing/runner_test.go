@@ -129,6 +129,37 @@ func TestRunnerSanitizesDialFailure(t *testing.T) {
 	}
 }
 
+func TestRunnerSanitizesProtocolSetupFailures(t *testing.T) {
+	dir := t.TempDir()
+	username, password := filepath.Join(dir, "username"), filepath.Join(dir, "password")
+	if err := os.WriteFile(username, []byte("operator\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(password, []byte("secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{Accounts: []config.AccountConfig{{ID: "account", UsernameFile: username, PasswordFile: password, ConnectionLimit: 1}}, Endpoints: []config.EndpointConfig{{ID: "endpoint", AccountID: "account", Host: "news.example", Port: 563}}, Resources: config.ResourceConfig{BatchSize: 1}}
+	for _, tc := range []struct {
+		name   string
+		client *fakeClient
+		want   string
+	}{
+		{name: "authentication", client: &fakeClient{authenticateErr: errors.New("server echoed credential: secret")}, want: "NNTP authentication failed"},
+		{name: "capabilities", client: &fakeClient{capabilitiesErr: errors.New("provider internal diagnostic")}, want: "NNTP capability negotiation failed"},
+		{name: "reader mode", client: &fakeClient{modeReaderErr: errors.New("server internal diagnostic")}, want: "NNTP reader mode failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			finalizer := &fakeFinalizer{}
+			runner := NewRunner(cfg, &fakeWriter{}, finalizer, accounts.NewGuard(cfg), nil, nil)
+			runner.Dial = func(context.Context, nntp.Endpoint) (nntp.Client, error) { return tc.client, nil }
+			err := runner.Run(context.Background(), jobs.Job{ID: "job", Endpoint: "endpoint"})
+			if err == nil || finalizer.reason != tc.want || strings.Contains(err.Error(), "diagnostic") || strings.Contains(err.Error(), "credential") {
+				t.Fatalf("err=%v finalizer=%#v", err, finalizer)
+			}
+		})
+	}
+}
+
 func TestScanFailureReasonIsSafeAndSpecific(t *testing.T) {
 	if got := scanFailureReason(errors.New("select newsgroup: GROUP returned 411 unexpected server text")); got != "NNTP newsgroup selection failed" {
 		t.Fatalf("group reason = %q", got)
