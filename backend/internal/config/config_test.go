@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -65,5 +66,35 @@ func TestReadSecretFileTrimsMountedSecretNewline(t *testing.T) {
 	value, err := ReadSecretFile(path)
 	if err != nil || value != "secret-value" {
 		t.Fatalf("ReadSecretFile() = %q, %v", value, err)
+	}
+}
+
+func TestLoadRejectsUnknownFieldsAndNeverAcceptsUnsafeEndpoint(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	contents := `{"database":{"url_file":"database-url","max_conns":4},"accounts":[{"id":"primary","username_file":"user","password_file":"password","connection_limit":1}],"endpoints":[{"id":"primary","account_id":"primary","host":"news.example","port":563,"tls":false,"primary":true}],"resources":{"active_jobs":1,"workers_per_job":1,"batch_size":1,"max_body_bytes":1},"unexpected":true}`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "parse config") {
+		t.Fatalf("Load() error = %v", err)
+	}
+	contents = strings.Replace(contents, `,"unexpected":true`, "", 1)
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "plaintext acknowledgement") {
+		t.Fatalf("Load() error = %v", err)
+	}
+}
+
+func TestCredentialsDoNotReturnPartialSecretOnFailure(t *testing.T) {
+	dir := t.TempDir()
+	usernameFile := filepath.Join(dir, "username")
+	if err := os.WriteFile(usernameFile, []byte("operator\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	username, password, err := (AccountConfig{UsernameFile: usernameFile, PasswordFile: filepath.Join(dir, "missing")}).Credentials()
+	if err == nil || username != "" || password != "" || strings.Contains(err.Error(), "operator") {
+		t.Fatalf("Credentials() = %q, %q, %v", username, password, err)
 	}
 }

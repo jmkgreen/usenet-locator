@@ -19,6 +19,8 @@ import (
 	"github.com/jmkgreen/usenet-locator/backend/internal/jobs"
 	"github.com/jmkgreen/usenet-locator/backend/internal/nntp"
 	"github.com/jmkgreen/usenet-locator/backend/internal/qualification"
+	"github.com/jmkgreen/usenet-locator/backend/internal/retention"
+	"github.com/jmkgreen/usenet-locator/backend/internal/watchlist"
 )
 
 func TestPersistenceWorkflow(t *testing.T) {
@@ -98,6 +100,44 @@ func TestPersistenceWorkflow(t *testing.T) {
 	if _, err := articleStore.BodyTarget(ctx, detail.ID); err != articles.ErrUnwanted {
 		t.Fatalf("body target error = %v, want unwanted", err)
 	}
+	if err := articleStore.SetUnwanted(ctx, []int64{detail.ID}, false); err != nil {
+		t.Fatalf("clear unwanted: %v", err)
+	}
+	target, err := articleStore.BodyTarget(ctx, detail.ID)
+	if err != nil || target.ArticleNumber != 10 || target.Newsgroup != "comp.integration" {
+		t.Fatalf("body target = %#v, err = %v", target, err)
+	}
+	if err := articleStore.SaveBody(ctx, detail.ID, "primary", ""); err == nil {
+		t.Fatal("accepted an empty decoded body")
+	}
+	if err := articleStore.SaveBody(ctx, detail.ID, "primary", "saved text"); err != nil {
+		t.Fatalf("save body: %v", err)
+	}
+	if body, err := articleStore.CachedBody(ctx, detail.ID); err != nil || body != "saved text" {
+		t.Fatalf("cached body = %q, err = %v", body, err)
+	}
+	if refreshed, err := articleStore.GetDetail(ctx, detail.ID); err != nil || !refreshed.CachedBody {
+		t.Fatalf("refreshed detail = %#v, err = %v", refreshed, err)
+	}
+	filtered, err := articleStore.Search(ctx, articles.SearchRequest{Newsgroup: "comp.integration", Subject: "subject", Author: "alice", MessageID: messageID, Limit: 1})
+	if err != nil || len(filtered.Articles) != 1 || filtered.Articles[0].ID != detail.ID {
+		t.Fatalf("filtered search = %#v, err = %v", filtered, err)
+	}
+	chronological, err := articleStore.Chronological(ctx, "comp.integration", "", 1)
+	if err != nil || len(chronological.Articles) != 1 || chronological.Articles[0].ID != detail.ID {
+		t.Fatalf("chronological = %#v, err = %v", chronological, err)
+	}
+	groups, err := articleStore.ListGroups(ctx)
+	if err != nil || len(groups) < 2 {
+		t.Fatalf("groups = %#v, err = %v", groups, err)
+	}
+	coverage, err := indexStore.ListCoverage(ctx, "comp.integration")
+	if err != nil || len(coverage) != 1 || coverage[0].Endpoint != "primary" || coverage[0].State != "complete" {
+		t.Fatalf("coverage = %#v, err = %v", coverage, err)
+	}
+	if usage, err := quota.ListUsage(ctx); err != nil || len(usage) != 1 || usage[0].TransferUsedBytes != 7 {
+		t.Fatalf("quota usage = %#v, err = %v", usage, err)
+	}
 	qualificationStore := qualification.NewStore(db.Pool)
 	if err := qualificationStore.Record(ctx, "primary", qualification.Result{Capabilities: []string{"READER", "LIST"}, OverviewFormatCode: 215, OverviewFields: []string{"subject", "date"}, OverviewCode: 224, OverviewRows: 1, OverviewDates: 1}); err != nil {
 		t.Fatalf("record qualification: %v", err)
@@ -105,6 +145,39 @@ func TestPersistenceWorkflow(t *testing.T) {
 	history, err := qualificationStore.List(ctx, "primary")
 	if err != nil || len(history) != 1 || history[0].Result.OverviewCode != 224 || len(history[0].Result.OverviewFields) != 2 {
 		t.Fatalf("qualification history = %#v, err = %v", history, err)
+	}
+	retentionStore := retention.NewStore(db.Pool)
+	retained := nntp.Overview{ArticleNumber: 1, Subject: "retained", Author: "Alice", Date: date, MessageID: "<retained@example.test>"}
+	number := retained.ArticleNumber
+	recorded, err := retentionStore.Record(ctx, retention.Observation{Endpoint: "primary", Newsgroup: "comp.retention", GroupLow: 1, GroupHigh: 10, ArticleNumber: &number, Outcome: "found", Article: &retained})
+	if err != nil || recorded.ArticleID == nil || recorded.Article != nil {
+		t.Fatalf("retention record = %#v, err = %v", recorded, err)
+	}
+	if observations, err := retentionStore.ListLatest(ctx, "comp.retention"); err != nil || len(observations) != 1 || observations[0].Outcome != "found" {
+		t.Fatalf("retention history = %#v, err = %v", observations, err)
+	}
+	if next, high, found, err := retentionStore.Cursor(ctx, "primary", "comp.retention"); err != nil || !found || next != 2 || high != 10 {
+		t.Fatalf("retention cursor = %d, %d, %v, %v", next, high, found, err)
+	}
+	if err := retentionStore.StoreHeaders(ctx, "primary", "comp.retention", []nntp.Overview{{ArticleNumber: 2, Date: date, MessageID: "<retained-next@example.test>"}}, 3, 10); err != nil {
+		t.Fatalf("store retained headers: %v", err)
+	}
+	watchlistStore := watchlist.NewStore(db.Pool)
+	item, err := watchlistStore.Add(ctx, "Comp.Watched", 2)
+	if err != nil || item.Newsgroup != "comp.watched" || item.IntervalHours != 2 {
+		t.Fatalf("watchlist add = %#v, err = %v", item, err)
+	}
+	if due, err := watchlistStore.Due(ctx, time.Now().UTC()); err != nil || len(due) != 1 || due[0] != "comp.watched" {
+		t.Fatalf("watchlist due = %#v, err = %v", due, err)
+	}
+	if err := watchlistStore.MarkChecked(ctx, "comp.watched", time.Now().UTC()); err != nil {
+		t.Fatalf("mark watchlist checked: %v", err)
+	}
+	if items, err := watchlistStore.List(ctx); err != nil || len(items) != 1 || items[0].LastCheckedAt == nil {
+		t.Fatalf("watchlist list = %#v, err = %v", items, err)
+	}
+	if err := watchlistStore.Remove(ctx, "comp.watched"); err != nil {
+		t.Fatalf("remove watchlist item: %v", err)
 	}
 }
 
