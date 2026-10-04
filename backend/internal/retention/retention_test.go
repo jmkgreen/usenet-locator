@@ -19,6 +19,7 @@ type memoryStore struct {
 	observations []Observation
 	start, high  int64
 	found        bool
+	listErr      error
 	stored       []nntp.Overview
 	next         int64
 }
@@ -29,7 +30,21 @@ func (s *memoryStore) Record(_ context.Context, item Observation) (Observation, 
 	return item, nil
 }
 func (s *memoryStore) ListLatest(context.Context, string) ([]Observation, error) {
-	return s.observations, nil
+	return s.observations, s.listErr
+}
+
+func TestListReturnsStoredHistoryAndPropagatesFailure(t *testing.T) {
+	items := []Observation{{Endpoint: "primary", Newsgroup: "comp.acceptance", Outcome: "found"}}
+	service := Service{store: &memoryStore{observations: items}}
+	got, err := service.List(context.Background(), "comp.acceptance")
+	if err != nil || len(got) != 1 || got[0].Endpoint != "primary" {
+		t.Fatalf("history = %#v, err = %v", got, err)
+	}
+	want := errors.New("database unavailable")
+	service.store = &memoryStore{listErr: want}
+	if _, err := service.List(context.Background(), "comp.acceptance"); !errors.Is(err, want) {
+		t.Fatalf("List error = %v, want %v", err, want)
+	}
 }
 func (s *memoryStore) Cursor(context.Context, string, string) (int64, int64, bool, error) {
 	if s.found {
