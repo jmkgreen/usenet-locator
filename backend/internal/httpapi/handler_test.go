@@ -10,6 +10,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jmkgreen/usenet-locator/backend/internal/accounts"
 	"github.com/jmkgreen/usenet-locator/backend/internal/articles"
 	"github.com/jmkgreen/usenet-locator/backend/internal/config"
@@ -533,6 +534,26 @@ func TestWatchlistRoutesRejectMalformedInputAndNormaliseGroup(t *testing.T) {
 	handler.ServeHTTP(removed, httptest.NewRequest(http.MethodDelete, "/api/v1/watchlist/ALT.TEST", nil))
 	if removed.Code != http.StatusNoContent || service.removed != "alt.test" {
 		t.Fatalf("removed = %d service=%#v", removed.Code, service)
+	}
+}
+
+func TestWatchlistRoutesFailSafely(t *testing.T) {
+	for _, tc := range []struct {
+		name, method, path string
+		err                error
+		want               int
+	}{
+		{"list", http.MethodGet, "/api/v1/watchlist", errors.New("database failed"), http.StatusInternalServerError},
+		{"missing delete", http.MethodDelete, "/api/v1/watchlist/alt.test", pgx.ErrNoRows, http.StatusNotFound},
+		{"failed delete", http.MethodDelete, "/api/v1/watchlist/alt.test", errors.New("database failed"), http.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := httptest.NewRecorder()
+			WithWatchlist(NewHandler("test"), &testWatchlist{err: tc.err}).ServeHTTP(res, httptest.NewRequest(tc.method, tc.path, nil))
+			if res.Code != tc.want || strings.Contains(res.Body.String(), "database failed") {
+				t.Fatalf("status=%d body=%s", res.Code, res.Body.String())
+			}
+		})
 	}
 }
 
