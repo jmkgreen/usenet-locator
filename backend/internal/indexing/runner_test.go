@@ -55,6 +55,80 @@ func TestRunnerInterruptsUnknownEndpoint(t *testing.T) {
 	}
 }
 
+func TestRunnerFailsClosedBeforeConnecting(t *testing.T) {
+	baseConfig := config.Config{Accounts: []config.AccountConfig{{ID: "account", ConnectionLimit: 1}}, Endpoints: []config.EndpointConfig{{ID: "endpoint", AccountID: "account"}}, Resources: config.ResourceConfig{BatchSize: 1}}
+	for _, tc := range []struct {
+		name   string
+		job    jobs.Job
+		runner func(*fakeFinalizer) Runner
+		want   string
+	}{
+		{
+			name: "missing account",
+			job:  jobs.Job{ID: "job", Endpoint: "endpoint"},
+			runner: func(finalizer *fakeFinalizer) Runner {
+				return Runner{Endpoints: map[string]config.EndpointConfig{"endpoint": {ID: "endpoint", AccountID: "gone"}}, Finalizer: finalizer}
+			},
+			want: "configured account is unavailable",
+		},
+		{
+			name: "incomplete worker",
+			job:  jobs.Job{ID: "job", Endpoint: "endpoint"},
+			runner: func(finalizer *fakeFinalizer) Runner {
+				return Runner{Endpoints: map[string]config.EndpointConfig{"endpoint": baseConfig.Endpoints[0]}, Accounts: map[string]config.AccountConfig{"account": baseConfig.Accounts[0]}, Finalizer: finalizer, Guard: accounts.NewGuard(baseConfig)}
+			},
+			want: "index worker is incomplete",
+		},
+		{
+			name: "unavailable credentials",
+			job:  jobs.Job{ID: "job", Endpoint: "endpoint"},
+			runner: func(finalizer *fakeFinalizer) Runner {
+				account := baseConfig.Accounts[0]
+				account.UsernameFile, account.PasswordFile = "missing-user", "missing-password"
+				cfg := baseConfig
+				cfg.Accounts = []config.AccountConfig{account}
+				return Runner{Endpoints: map[string]config.EndpointConfig{"endpoint": baseConfig.Endpoints[0]}, Accounts: map[string]config.AccountConfig{"account": account}, Writer: &fakeWriter{}, Finalizer: finalizer, BatchSize: 1, Dial: func(context.Context, nntp.Endpoint) (nntp.Client, error) {
+					t.Fatal("Dial must not receive missing credentials")
+					return nil, nil
+				}, Guard: accounts.NewGuard(cfg)}
+			},
+			want: "NNTP credentials are unavailable",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			finalizer := &fakeFinalizer{}
+			err := tc.runner(finalizer).Run(context.Background(), tc.job)
+			if err == nil || finalizer.reason != tc.want || !finalizer.interrupted {
+				t.Fatalf("err=%v finalizer=%#v", err, finalizer)
+			}
+			if strings.Contains(err.Error(), "missing-password") || strings.Contains(err.Error(), "missing-user") {
+				t.Fatalf("unsafe error detail leaked: %v", err)
+			}
+		})
+	}
+}
+
+func TestRunnerSanitizesDialFailure(t *testing.T) {
+	dir := t.TempDir()
+	username, password := filepath.Join(dir, "username"), filepath.Join(dir, "password")
+	if err := os.WriteFile(username, []byte("operator\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(password, []byte("secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{Accounts: []config.AccountConfig{{ID: "account", UsernameFile: username, PasswordFile: password, ConnectionLimit: 1}}, Endpoints: []config.EndpointConfig{{ID: "endpoint", AccountID: "account", Host: "news.example", Port: 563}}, Resources: config.ResourceConfig{BatchSize: 1}}
+	finalizer := &fakeFinalizer{}
+	runner := NewRunner(cfg, &fakeWriter{}, finalizer, accounts.NewGuard(cfg), nil, nil)
+	runner.Dial = func(context.Context, nntp.Endpoint) (nntp.Client, error) {
+		return nil, errors.New("provider refuses secret diagnostic")
+	}
+	err := runner.Run(context.Background(), jobs.Job{ID: "job", Endpoint: "endpoint"})
+	if err == nil || finalizer.reason != "NNTP connection failed" || strings.Contains(err.Error(), "secret diagnostic") {
+		t.Fatalf("err=%v finalizer=%#v", err, finalizer)
+	}
+}
+
 func TestScanFailureReasonIsSafeAndSpecific(t *testing.T) {
 	if got := scanFailureReason(errors.New("select newsgroup: GROUP returned 411 unexpected server text")); got != "NNTP newsgroup selection failed" {
 		t.Fatalf("group reason = %q", got)
