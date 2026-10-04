@@ -2,9 +2,11 @@ package retention
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,21 +44,31 @@ func (s *memoryStore) StoreHeaders(_ context.Context, _ string, _ string, header
 }
 
 type probeClient struct {
-	group     string
-	ranges    [][2]int64
-	overviews []nntp.Overview
-	transfer  int64
+	group       string
+	ranges      [][2]int64
+	overviews   []nntp.Overview
+	transfer    int64
+	authErr     error
+	capsErr     error
+	modeErr     error
+	groupErr    error
+	overviewErr error
 }
 
-func (c *probeClient) Authenticate(context.Context, string, string) error { return nil }
-func (c *probeClient) Capabilities(context.Context) ([]string, error)     { return []string{"READER"}, nil }
-func (c *probeClient) ModeReader(context.Context) error                   { return nil }
+func (c *probeClient) Authenticate(context.Context, string, string) error { return c.authErr }
+func (c *probeClient) Capabilities(context.Context) ([]string, error) {
+	return []string{"READER"}, c.capsErr
+}
+func (c *probeClient) ModeReader(context.Context) error { return c.modeErr }
 func (c *probeClient) Group(_ context.Context, group string) (nntp.Group, error) {
 	c.group = group
-	return nntp.Group{Name: group, Low: 10, High: 9999}, nil
+	return nntp.Group{Name: group, Low: 10, High: 9999}, c.groupErr
 }
 func (c *probeClient) Overview(_ context.Context, start, end int64, emit func(nntp.Overview) error) error {
 	c.ranges = append(c.ranges, [2]int64{start, end})
+	if c.overviewErr != nil {
+		return c.overviewErr
+	}
 	if c.overviews != nil {
 		for _, item := range c.overviews {
 			if err := emit(item); err != nil {
@@ -135,5 +147,39 @@ func TestRetrieveNextRejectsUnsafeInputAndMissingCursor(t *testing.T) {
 		if err := service.RetrieveNext(context.Background(), request.group, request.limit); err == nil {
 			t.Fatalf("RetrieveNext(%q, %d) accepted invalid input", request.group, request.limit)
 		}
+	}
+}
+
+func TestProbeUsesSafeFixedOutcomesForProviderFailures(t *testing.T) {
+	dir := t.TempDir()
+	username, password := filepath.Join(dir, "username"), filepath.Join(dir, "password")
+	if err := os.WriteFile(username, []byte("operator\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(password, []byte("credential\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{Accounts: []config.AccountConfig{{ID: "account", UsernameFile: username, PasswordFile: password, ConnectionLimit: 1}}, Endpoints: []config.EndpointConfig{{ID: "provider", AccountID: "account", Host: "news.example", Port: 563, TLS: true}}}
+	cases := []struct {
+		name, want string
+		set        func(*probeClient)
+	}{
+		{"authentication", "authentication_failed", func(c *probeClient) { c.authErr = errors.New("provider said secret") }},
+		{"capabilities", "capability_failed", func(c *probeClient) { c.capsErr = errors.New("provider transcript") }},
+		{"reader mode", "reader_mode_failed", func(c *probeClient) { c.modeErr = errors.New("provider transcript") }},
+		{"group", "group_unavailable", func(c *probeClient) { c.groupErr = errors.New("provider transcript") }},
+		{"overview", "overview_failed", func(c *probeClient) { c.overviewErr = errors.New("provider transcript") }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &probeClient{}
+			tc.set(client)
+			service := New(cfg, &memoryStore{}, accounts.NewGuard(cfg), nil)
+			service.dial = func(context.Context, nntp.Endpoint) (nntp.Client, error) { return client, nil }
+			observation := service.probeEndpoint(context.Background(), cfg.Endpoints[0], "alt.test")
+			if observation.Outcome != tc.want || strings.Contains(observation.Outcome, "transcript") || strings.Contains(observation.Outcome, "credential") {
+				t.Fatalf("observation = %#v", observation)
+			}
+		})
 	}
 }
