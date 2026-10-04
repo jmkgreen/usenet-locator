@@ -4,9 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/jmkgreen/usenet-locator/backend/internal/accounts"
+	"github.com/jmkgreen/usenet-locator/backend/internal/config"
 	"github.com/jmkgreen/usenet-locator/backend/internal/jobs"
 	"github.com/jmkgreen/usenet-locator/backend/internal/nntp"
 )
@@ -19,6 +24,13 @@ type fakeFinalizer struct {
 type fakeJobQuota struct {
 	consumed int64
 	err      error
+}
+
+type fakeAccountQuota struct{ consumed int64 }
+
+func (f *fakeAccountQuota) Consume(_ context.Context, _ string, bytes int64) error {
+	f.consumed += bytes
+	return nil
 }
 
 func (f *fakeJobQuota) ConsumeTransfer(_ context.Context, _ string, bytes int64) error {
@@ -67,5 +79,28 @@ func TestRecordTransferStopsAtJobBudget(t *testing.T) {
 	err := runner.recordTransfer(context.Background(), "account", "job", 123)
 	if !errors.Is(err, jobs.ErrTransferLimitExceeded) || quota.consumed != 123 {
 		t.Fatalf("record transfer = %v, quota = %#v", err, quota)
+	}
+}
+
+func TestRunnerCompletesBoundedScanAndChargesMeasuredTransfers(t *testing.T) {
+	dir := t.TempDir()
+	username, password := filepath.Join(dir, "username"), filepath.Join(dir, "password")
+	if err := os.WriteFile(username, []byte("operator\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(password, []byte("secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	date := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	cfg := config.Config{Accounts: []config.AccountConfig{{ID: "account", UsernameFile: username, PasswordFile: password, ConnectionLimit: 1}}, Endpoints: []config.EndpointConfig{{ID: "endpoint", AccountID: "account", Host: "news.example", Port: 563, TLS: true}}, Resources: config.ResourceConfig{BatchSize: 1}}
+	client := &fakeClient{group: nntp.Group{Low: 1, High: 1}, records: map[int64]nntp.Overview{1: {ArticleNumber: 1, Date: date, MessageID: "<one@test>"}}}
+	writer, finalizer, quota, jobQuota := &fakeWriter{}, &fakeFinalizer{}, &fakeAccountQuota{}, &fakeJobQuota{}
+	runner := NewRunner(cfg, writer, finalizer, accounts.NewGuard(cfg), quota, jobQuota)
+	runner.Dial = func(context.Context, nntp.Endpoint) (nntp.Client, error) { return client, nil }
+	if err := runner.Run(context.Background(), jobs.Job{ID: "job", Endpoint: "endpoint", Newsgroup: "alt.test", StartDate: date, EndDate: date}); err != nil {
+		t.Fatal(err)
+	}
+	if !finalizer.completed || len(writer.batches) != 1 || quota.consumed == 0 || jobQuota.consumed != quota.consumed {
+		t.Fatalf("finalizer=%#v batches=%#v quota=%#v jobQuota=%#v", finalizer, writer.batches, quota, jobQuota)
 	}
 }
