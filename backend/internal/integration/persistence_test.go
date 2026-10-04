@@ -104,7 +104,7 @@ func TestPersistenceWorkflow(t *testing.T) {
 		t.Fatalf("clear unwanted: %v", err)
 	}
 	target, err := articleStore.BodyTarget(ctx, detail.ID)
-	if err != nil || target.ArticleNumber != 10 || target.Newsgroup != "comp.integration" {
+	if err != nil || target.ArticleID != detail.ID || target.EndpointID != "primary" {
 		t.Fatalf("body target = %#v, err = %v", target, err)
 	}
 	if err := articleStore.SaveBody(ctx, detail.ID, "primary", ""); err == nil {

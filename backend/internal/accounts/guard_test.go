@@ -26,3 +26,18 @@ func TestGuardHonoursAccountConnectionLimit(t *testing.T) {
 		release()
 	}
 }
+
+func TestConnectionUsageReportsOnlyConfiguredAccountOccupancy(t *testing.T) {
+	guard := NewGuard(config.Config{Accounts: []config.AccountConfig{{ID: "account", ConnectionLimit: 2}}})
+	if inUse, limit, ok := guard.ConnectionUsage("missing"); ok || inUse != 0 || limit != 0 {
+		t.Fatalf("missing usage = %d/%d, ok=%v", inUse, limit, ok)
+	}
+	release, err := guard.Acquire(context.Background(), "account")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if inUse, limit, ok := guard.ConnectionUsage("account"); !ok || inUse != 1 || limit != 2 {
+		t.Fatalf("usage = %d/%d, ok=%v", inUse, limit, ok)
+	}
+}

@@ -18,6 +18,7 @@ import (
 	"github.com/jmkgreen/usenet-locator/backend/internal/providers"
 	"github.com/jmkgreen/usenet-locator/backend/internal/qualification"
 	"github.com/jmkgreen/usenet-locator/backend/internal/retention"
+	"github.com/jmkgreen/usenet-locator/backend/internal/watchlist"
 )
 
 type testJobs struct {
@@ -58,6 +59,39 @@ type testRetention struct {
 	items  []retention.Observation
 	err    error
 	probed string
+}
+
+type testWatchlist struct {
+	item    watchlist.Item
+	group   string
+	removed string
+	err     error
+}
+
+func (s *testWatchlist) List(context.Context) ([]watchlist.Item, error) {
+	return []watchlist.Item{s.item}, s.err
+}
+func (s *testWatchlist) Add(_ context.Context, group string, interval int) (watchlist.Item, error) {
+	s.group = group
+	if s.err != nil {
+		return watchlist.Item{}, s.err
+	}
+	return watchlist.Item{Newsgroup: strings.ToLower(group), IntervalHours: interval}, nil
+}
+func (s *testWatchlist) Remove(_ context.Context, group string) error {
+	s.removed = group
+	return s.err
+}
+
+type testChronological struct {
+	group, cursor string
+	limit         int
+	err           error
+}
+
+func (s *testChronological) Chronological(_ context.Context, group, cursor string, limit int) (articles.SearchPage, error) {
+	s.group, s.cursor, s.limit = group, cursor, limit
+	return articles.SearchPage{Articles: []articles.SearchResult{{ID: 1, MessageID: "<safe@test>"}}}, s.err
 }
 
 func (s *testRetention) Probe(_ context.Context, group string) ([]retention.Observation, error) {
@@ -423,6 +457,52 @@ func TestRetentionProbeAndStoredHistoryRoutes(t *testing.T) {
 	handler.ServeHTTP(stored, httptest.NewRequest(http.MethodGet, "/api/v1/newsgroups/alt.test/retention", nil))
 	if stored.Code != http.StatusOK || !strings.Contains(stored.Body.String(), `"outcome":"found"`) {
 		t.Fatalf("stored = %d %s", stored.Code, stored.Body.String())
+	}
+}
+
+func TestWatchlistRoutesRejectMalformedInputAndNormaliseGroup(t *testing.T) {
+	t.Parallel()
+	service := &testWatchlist{item: watchlist.Item{Newsgroup: "alt.test", IntervalHours: 12}}
+	handler := WithWatchlist(NewHandler("test"), service)
+
+	malformed := httptest.NewRecorder()
+	handler.ServeHTTP(malformed, httptest.NewRequest(http.MethodPost, "/api/v1/watchlist", strings.NewReader(`{"newsgroup":"alt.test","interval_hours":1,"extra":true}`)))
+	if malformed.Code != http.StatusBadRequest {
+		t.Fatalf("malformed status = %d", malformed.Code)
+	}
+
+	created := httptest.NewRecorder()
+	handler.ServeHTTP(created, httptest.NewRequest(http.MethodPost, "/api/v1/watchlist", strings.NewReader(`{"newsgroup":"Alt.Test","interval_hours":12}`)))
+	if created.Code != http.StatusCreated || service.group != "Alt.Test" || !strings.Contains(created.Body.String(), `"newsgroup":"alt.test"`) {
+		t.Fatalf("created = %d %s service=%#v", created.Code, created.Body.String(), service)
+	}
+
+	invalidDelete := httptest.NewRecorder()
+	handler.ServeHTTP(invalidDelete, httptest.NewRequest(http.MethodDelete, "/api/v1/watchlist/alt/test", nil))
+	if invalidDelete.Code != http.StatusBadRequest {
+		t.Fatalf("invalid delete = %d", invalidDelete.Code)
+	}
+
+	removed := httptest.NewRecorder()
+	handler.ServeHTTP(removed, httptest.NewRequest(http.MethodDelete, "/api/v1/watchlist/ALT.TEST", nil))
+	if removed.Code != http.StatusNoContent || service.removed != "alt.test" {
+		t.Fatalf("removed = %d service=%#v", removed.Code, service)
+	}
+}
+
+func TestChronologicalRouteRejectsInvalidLimitAndNeverTouchesNNTP(t *testing.T) {
+	t.Parallel()
+	lister := &testChronological{}
+	handler := WithChronologicalBrowser(NewHandler("test"), lister)
+	bad := httptest.NewRecorder()
+	handler.ServeHTTP(bad, httptest.NewRequest(http.MethodGet, "/api/v1/newsgroups/alt.test/headers?limit=not-a-number", nil))
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("bad request status = %d", bad.Code)
+	}
+	good := httptest.NewRecorder()
+	handler.ServeHTTP(good, httptest.NewRequest(http.MethodGet, "/api/v1/newsgroups/alt.test/headers?limit=2&cursor=opaque", nil))
+	if good.Code != http.StatusOK || lister.group != "alt.test" || lister.cursor != "opaque" || lister.limit != 2 || !strings.Contains(good.Body.String(), `"message_id"`) {
+		t.Fatalf("response = %d %s lister=%#v", good.Code, good.Body.String(), lister)
 	}
 }
 
