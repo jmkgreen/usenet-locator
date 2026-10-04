@@ -149,6 +149,7 @@ func (s Store) aggregateParent(ctx context.Context, job *Job) error {
 			paused++
 		case Interrupted:
 			interrupted++
+			nonCompleted++
 		case Completed:
 		case Cancelled:
 			cancelled++
