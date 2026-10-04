@@ -127,6 +127,15 @@ func (testStorage) ListCoverage(context.Context, string) ([]indexing.Coverage, e
 	return []indexing.Coverage{{Endpoint: "primary", Newsgroup: "comp.lang.go", State: "complete", ArticleNumberStart: 1, ArticleNumberEnd: 2}}, nil
 }
 
+type failingStorage struct{}
+
+func (failingStorage) ListGroups(context.Context) ([]articles.GroupCount, error) {
+	return nil, errors.New("storage unavailable")
+}
+func (failingStorage) ListCoverage(context.Context, string) ([]indexing.Coverage, error) {
+	return nil, errors.New("storage unavailable")
+}
+
 func (s *testSearch) SetUnwanted(context.Context, []int64, bool) error { return nil }
 func (s *testSearch) Search(_ context.Context, request articles.SearchRequest) (articles.SearchPage, error) {
 	s.request = request
@@ -445,6 +454,17 @@ func TestStorageBrowserKeepsCoverageEndpointLocal(t *testing.T) {
 	handler.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/coverage?newsgroup=comp.lang.go", nil))
 	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"endpoint":"primary"`) {
 		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+}
+
+func TestStorageBrowserFailsClosedOnStorageError(t *testing.T) {
+	handler := WithStorageBrowser(NewHandler("test"), failingStorage{}, failingStorage{})
+	for _, path := range []string{"/api/v1/newsgroups", "/api/v1/coverage?newsgroup=alt.test"} {
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, httptest.NewRequest(http.MethodGet, path, nil))
+		if res.Code != http.StatusInternalServerError || strings.Contains(res.Body.String(), "storage unavailable") {
+			t.Fatalf("%s = %d %s", path, res.Code, res.Body.String())
+		}
 	}
 }
 
