@@ -181,6 +181,23 @@ func TestCapabilitiesAndLegacyReaderMode(t *testing.T) {
 	close(done)
 }
 
+func TestCapabilitiesReadsMultilineReply(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	go func() {
+		defer serverConn.Close()
+		r, w := bufio.NewReader(serverConn), bufio.NewWriter(serverConn)
+		_, _ = r.ReadString('\n')
+		_, _ = w.WriteString("101 capabilities\r\nREADER\r\nOVER\r\n.\r\n")
+		_ = w.Flush()
+	}()
+	c := &wireClient{conn: clientConn, text: textproto.NewConn(clientConn), ep: Endpoint{ReadTimeout: time.Second}}
+	caps, err := c.Capabilities(context.Background())
+	if err != nil || len(caps) != 2 || caps[0] != "READER" {
+		t.Fatalf("caps=%#v err=%v", caps, err)
+	}
+}
+
 func TestOverviewFormatKeepsOnlyRecognisedFields(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	done := make(chan struct{})
