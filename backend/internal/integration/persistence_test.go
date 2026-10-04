@@ -216,6 +216,38 @@ func TestPersistenceWorkflow(t *testing.T) {
 	if cancelled, err := jobStore.Get(ctx, parentID); err != nil || cancelled.State != jobs.Cancelled {
 		t.Fatalf("cancelled parent = %#v, err = %v", cancelled, err)
 	}
+	restartParent, err := jobStore.Create(ctx, jobs.CreateRequest{NewsgroupID: "comp.restart", EndpointID: "primary", StartDate: date, EndDate: date, MarginDays: 0})
+	if err != nil {
+		t.Fatalf("create restart job: %v", err)
+	}
+	restartChild, claimed, err := jobStore.ClaimNext(ctx)
+	if err != nil || !claimed {
+		t.Fatalf("claim restart child = %#v, %v, %v", restartChild, claimed, err)
+	}
+	if err := jobStore.RecoverInterrupted(ctx); err != nil {
+		t.Fatalf("recover interrupted jobs: %v", err)
+	}
+	if recovered, err := jobStore.Get(ctx, restartChild.ID); err != nil || recovered.State != jobs.Interrupted {
+		t.Fatalf("recovered child = %#v, err = %v", recovered, err)
+	}
+	if recoveredParent, err := jobStore.Get(ctx, restartParent); err != nil || recoveredParent.State != jobs.Interrupted {
+		t.Fatalf("recovered parent = %#v, err = %v", recoveredParent, err)
+	}
+	timeline := []nntp.Overview{
+		{ArticleNumber: 30, MessageID: "<timeline-a@example.test>", Date: date},
+		{ArticleNumber: 31, MessageID: "<timeline-b@example.test>", Date: date},
+	}
+	if err := retentionStore.StoreHeaders(ctx, "primary", "comp.timeline", timeline, 32, 32); err != nil {
+		t.Fatalf("store chronological headers: %v", err)
+	}
+	firstPage, err := articleStore.Chronological(ctx, "comp.timeline", "", 1)
+	if err != nil || len(firstPage.Articles) != 1 || firstPage.NextCursor == "" {
+		t.Fatalf("first chronological page = %#v, err = %v", firstPage, err)
+	}
+	secondPage, err := articleStore.Chronological(ctx, "comp.timeline", firstPage.NextCursor, 1)
+	if err != nil || len(secondPage.Articles) != 1 || secondPage.Articles[0].ID == firstPage.Articles[0].ID {
+		t.Fatalf("second chronological page = %#v, err = %v", secondPage, err)
+	}
 }
 
 func createAndClaim(t *testing.T, ctx context.Context, store jobs.Store, group string, date time.Time) string {
