@@ -56,9 +56,11 @@ type testQualificationHistory struct {
 	err   error
 }
 type testRetention struct {
-	items  []retention.Observation
-	err    error
-	probed string
+	items          []retention.Observation
+	err            error
+	probed         string
+	retrievedGroup string
+	retrievedLimit int
 }
 
 type testWatchlist struct {
@@ -101,7 +103,10 @@ func (s *testRetention) Probe(_ context.Context, group string) ([]retention.Obse
 func (s *testRetention) List(context.Context, string) ([]retention.Observation, error) {
 	return s.items, s.err
 }
-func (s *testRetention) RetrieveNext(context.Context, string, int) error { return s.err }
+func (s *testRetention) RetrieveNext(_ context.Context, group string, limit int) error {
+	s.retrievedGroup, s.retrievedLimit = group, limit
+	return s.err
+}
 
 func (s testQualificationHistory) Record(context.Context, string, qualification.Result) error {
 	return nil
@@ -457,6 +462,27 @@ func TestRetentionProbeAndStoredHistoryRoutes(t *testing.T) {
 	handler.ServeHTTP(stored, httptest.NewRequest(http.MethodGet, "/api/v1/newsgroups/alt.test/retention", nil))
 	if stored.Code != http.StatusOK || !strings.Contains(stored.Body.String(), `"outcome":"found"`) {
 		t.Fatalf("stored = %d %s", stored.Code, stored.Body.String())
+	}
+}
+
+func TestRetentionHeaderRetrievalIsBoundedAndFailsClosed(t *testing.T) {
+	service := &testRetention{}
+	handler := WithRetention(NewHandler("test"), service)
+	bad := httptest.NewRecorder()
+	handler.ServeHTTP(bad, httptest.NewRequest(http.MethodPost, "/api/v1/newsgroups/alt.test/oldest-headers?limit=bad", nil))
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("bad status = %d", bad.Code)
+	}
+	ok := httptest.NewRecorder()
+	handler.ServeHTTP(ok, httptest.NewRequest(http.MethodPost, "/api/v1/newsgroups/Alt.Test/oldest-headers?limit=10", nil))
+	if ok.Code != http.StatusAccepted || service.retrievedGroup != "alt.test" || service.retrievedLimit != 10 {
+		t.Fatalf("response=%d service=%#v", ok.Code, service)
+	}
+	service.err = errors.New("provider unavailable")
+	failure := httptest.NewRecorder()
+	handler.ServeHTTP(failure, httptest.NewRequest(http.MethodPost, "/api/v1/newsgroups/alt.test/oldest-headers?limit=10", nil))
+	if failure.Code != http.StatusBadGateway || strings.Contains(failure.Body.String(), "provider") {
+		t.Fatalf("failure=%d %s", failure.Code, failure.Body.String())
 	}
 }
 
