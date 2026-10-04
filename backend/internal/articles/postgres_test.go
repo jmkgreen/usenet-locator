@@ -76,6 +76,11 @@ func TestPostgresStoredArticleJourney(t *testing.T) {
 	if err != nil || result.ArticlesStored != 2 || result.InvalidMessageID != 1 {
 		t.Fatalf("persist batch = %#v, err = %v", result, err)
 	}
+	// A retry planner must be able to skip durable coverage without opening an
+	// NNTP connection or writing duplicate articles.
+	if err := indexStore.AdvanceCovered(ctx, indexing.Batch{JobID: job.ID, RangeStart: 10, RangeEnd: 12, NextArticle: 13, HeadersRetrieved: 3}); err != nil {
+		t.Fatalf("advance known coverage: %v", err)
+	}
 	if err := jobStore.Complete(ctx, job.ID); err != nil {
 		t.Fatalf("complete index job: %v", err)
 	}
