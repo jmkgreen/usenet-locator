@@ -28,7 +28,10 @@ jobs:
           go-version: '1.27.x'
       - run: go test -race -covermode=atomic -coverpkg=./backend/internal/... -coverprofile coverage.out ./backend/internal/...
       - name: Enforce 80% backend coverage
-        run: go tool cover -func coverage.out | awk '/^total:/ { if ($3 + 0 < 80) exit 1 }'
+        run: |
+          coverage="$(go tool cover -func coverage.out)"
+          echo "$coverage"
+          echo "$coverage" | awk '/^total:/ { if ($3 + 0 < 80) exit 1 }'
   frontend:
     runs-on: ubuntu-latest
     steps:
