@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/textproto"
+	"strings"
 	"testing"
 	"time"
 )
@@ -286,5 +287,29 @@ func TestAuthenticateAndTransferAccounting(t *testing.T) {
 	}
 	if err := c.Close(); err != nil {
 		t.Fatalf("close: %v", err)
+	}
+}
+
+func TestAuthenticateRejectsProviderResponsesWithoutEchoingThem(t *testing.T) {
+	for _, tc := range []struct{ response string }{{"480 provider transcript secret\r\n"}, {"381 continue\r\n481 password transcript secret\r\n"}} {
+		t.Run(tc.response[:3], func(t *testing.T) {
+			clientConn, serverConn := net.Pipe()
+			defer clientConn.Close()
+			go func() {
+				defer serverConn.Close()
+				r, w := bufio.NewReader(serverConn), bufio.NewWriter(serverConn)
+				_, _ = r.ReadString('\n')
+				_, _ = w.WriteString(tc.response)
+				_ = w.Flush()
+				if tc.response[:3] == "381" {
+					_, _ = r.ReadString('\n')
+				}
+			}()
+			c := &wireClient{conn: clientConn, text: textproto.NewConn(clientConn), ep: Endpoint{ReadTimeout: time.Second}}
+			err := c.Authenticate(context.Background(), "operator", "password")
+			if err == nil || strings.Contains(err.Error(), "secret") {
+				t.Fatalf("error = %v", err)
+			}
+		})
 	}
 }
