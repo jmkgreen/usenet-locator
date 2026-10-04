@@ -100,6 +100,14 @@ func TestPersistenceWorkflow(t *testing.T) {
 	if _, err := articleStore.BodyTarget(ctx, detail.ID); err != articles.ErrUnwanted {
 		t.Fatalf("body target error = %v, want unwanted", err)
 	}
+	hidden, err := articleStore.Search(ctx, articles.SearchRequest{Newsgroup: "comp.integration", Limit: 10})
+	if err != nil || len(hidden.Articles) != 0 {
+		t.Fatalf("ordinary search after unwanted mark = %#v, err = %v", hidden, err)
+	}
+	included, err := articleStore.Search(ctx, articles.SearchRequest{Newsgroup: "comp.integration", IncludeUnwanted: true, Limit: 10})
+	if err != nil || len(included.Articles) != 1 || !included.Articles[0].Unwanted {
+		t.Fatalf("include-unwanted search = %#v, err = %v", included, err)
+	}
 	if err := articleStore.SetUnwanted(ctx, []int64{detail.ID}, false); err != nil {
 		t.Fatalf("clear unwanted: %v", err)
 	}
