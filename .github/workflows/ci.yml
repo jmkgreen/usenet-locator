@@ -23,7 +23,7 @@ jobs:
       USENET_LOCATOR_TEST_DATABASE_URL: postgresql://integration:integration@localhost:5432/integration?sslmode=disable
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.27.x'
       - run: go test -race -covermode=atomic -coverpkg=./backend/internal/... -coverprofile coverage.out ./backend/internal/...
@@ -86,7 +86,7 @@ jobs:
       USENET_LOCATOR_TEST_DATABASE_URL: postgresql://integration:integration@localhost:5432/integration?sslmode=disable
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.27.x'
       - run: go test ./backend/internal/integration/...
