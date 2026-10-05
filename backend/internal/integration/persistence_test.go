@@ -278,6 +278,28 @@ func TestPersistenceWorkflow(t *testing.T) {
 	if id, err := calendar.Complete(ctx, "comp.integration", missingDay, missingDay); err != nil || id == "" {
 		t.Fatalf("complete missing period = %q, %v", id, err)
 	}
+	if pending, err := calendar.List(ctx, "comp.integration", "day", &missingDay); err != nil || len(pending) != 31 || pending[11].State != "pending" {
+		t.Fatalf("pending timeline day = %#v, err = %v", pending, err)
+	}
+	multiStart := date.AddDate(0, 1, 0)
+	if id, err := calendar.Complete(ctx, "comp.integration", multiStart, multiStart.AddDate(0, 0, 1)); err != nil || id == "" {
+		t.Fatalf("complete multi-day gap = %q, %v", id, err)
+	}
+	if _, err := calendar.Complete(ctx, "comp.integration", multiStart, multiStart.AddDate(0, 0, -1)); err == nil {
+		t.Fatal("accepted reversed timeline interval")
+	}
+	yearStart := time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC)
+	if explicit, err := calendar.List(ctx, "comp.integration", "year", &yearStart); err != nil || len(explicit) != 1 {
+		t.Fatalf("explicit timeline year = %#v, err = %v", explicit, err)
+	}
+	for _, request := range []struct {
+		level string
+		start *time.Time
+	}{{"bad", nil}, {"month", nil}, {"day", nil}} {
+		if _, err := calendar.List(ctx, "comp.integration", request.level, request.start); err == nil {
+			t.Fatalf("accepted invalid timeline request %#v", request)
+		}
+	}
 }
 
 func createAndClaim(t *testing.T, ctx context.Context, store jobs.Store, group string, date time.Time) string {
