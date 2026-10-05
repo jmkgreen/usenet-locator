@@ -49,7 +49,7 @@ func TestPostgresRetentionObservationAndHeaderLifecycle(t *testing.T) {
 	store := NewStore(db.Pool)
 	articleNumber := int64(10)
 	date := time.Date(2024, 5, 6, 7, 8, 9, 0, time.UTC)
-	stored, err := store.Record(ctx, Observation{Endpoint: "primary", Newsgroup: "Comp.Retention", GroupLow: 1, GroupHigh: 20, ArticleNumber: &articleNumber, Article: &nntp.Overview{ArticleNumber: articleNumber, MessageID: "<retained@example.test>", Subject: "retained", Author: "author", Date: date}, ObservedDate: date, Outcome: "found"})
+	stored, err := store.Record(ctx, Observation{Endpoint: "primary", Newsgroup: "Comp.Retention", GroupLow: 1, GroupHigh: 20, ArticleNumber: &articleNumber, Article: &nntp.Overview{ArticleNumber: articleNumber, MessageID: "<retained@example.test>", Subject: "retained", Author: "author", Date: date}, ObservedDate: &date, Outcome: "found"})
 	if err != nil || stored.ArticleID == nil || stored.Article != nil || stored.ObservedAt.IsZero() || stored.Newsgroup != "Comp.Retention" {
 		t.Fatalf("record = %#v, err = %v", stored, err)
 	}
