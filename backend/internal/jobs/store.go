@@ -32,7 +32,7 @@ func (s Store) Create(ctx context.Context, request CreateRequest) (string, error
 	}
 	defer tx.Rollback(ctx)
 	rows, err := tx.Query(ctx, `SELECT e.id FROM nntp_endpoints e JOIN provider_accounts a ON a.id = e.account_id
-        WHERE e.enabled AND a.enabled ORDER BY e.priority, e.id`)
+		WHERE e.enabled AND a.enabled AND (COALESCE(cardinality($1::text[]), 0) = 0 OR e.id = ANY($1)) ORDER BY e.priority, e.id`, request.EndpointIDs)
 	if err != nil {
 		return "", fmt.Errorf("list enabled endpoints: %w", err)
 	}

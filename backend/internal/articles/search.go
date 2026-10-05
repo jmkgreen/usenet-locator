@@ -27,8 +27,9 @@ type SearchResult struct {
 }
 
 type SearchPage struct {
-	Articles   []SearchResult
-	NextCursor string
+	Articles     []SearchResult
+	NextCursor   string
+	TotalRecords int64
 }
 
 type Searcher interface {
@@ -44,14 +45,13 @@ func (s Store) Search(ctx context.Context, request SearchRequest) (SearchPage, e
 	if err != nil {
 		return SearchPage{}, err
 	}
-	query := strings.Builder{}
-	query.WriteString(`SELECT a.id, a.message_id, COALESCE(a.subject, ''), COALESCE(a.author, ''), a.article_date,
-        COALESCE(p.unwanted, false) FROM articles a LEFT JOIN article_preferences p ON p.article_id = a.id WHERE true`)
+	where := strings.Builder{}
+	where.WriteString(` FROM articles a LEFT JOIN article_preferences p ON p.article_id = a.id WHERE true`)
 	args := make([]any, 0, 8)
 	add := func(condition string, value any) {
 		args = append(args, value)
-		query.WriteString(" AND ")
-		query.WriteString(fmt.Sprintf(condition, len(args)))
+		where.WriteString(" AND ")
+		where.WriteString(fmt.Sprintf(condition, len(args)))
 	}
 	if request.Subject != "" {
 		add("a.subject ILIKE '%%' || $%d || '%%'", request.Subject)
@@ -72,10 +72,18 @@ func (s Store) Search(ctx context.Context, request SearchRequest) (SearchPage, e
 		add("a.article_date < $%d", *request.End)
 	}
 	if !request.IncludeUnwanted {
-		query.WriteString(" AND COALESCE(p.unwanted, false) = false")
+		where.WriteString(" AND COALESCE(p.unwanted, false) = false")
 	}
+	var total int64
+	if err := s.pool.QueryRow(ctx, "SELECT count(*)"+where.String(), args...).Scan(&total); err != nil {
+		return SearchPage{}, fmt.Errorf("count search articles: %w", err)
+	}
+	query := strings.Builder{}
+	query.WriteString(`SELECT a.id, a.message_id, COALESCE(a.subject, ''), COALESCE(a.author, ''), a.article_date, COALESCE(p.unwanted, false)`)
+	query.WriteString(where.String())
 	if lastID > 0 {
-		add("a.id < $%d", lastID)
+		args = append(args, lastID)
+		query.WriteString(fmt.Sprintf(" AND a.id < $%d", len(args)))
 	}
 	args = append(args, request.Limit+1)
 	query.WriteString(fmt.Sprintf(" ORDER BY a.id DESC LIMIT $%d", len(args)))
@@ -84,7 +92,7 @@ func (s Store) Search(ctx context.Context, request SearchRequest) (SearchPage, e
 		return SearchPage{}, fmt.Errorf("search articles: %w", err)
 	}
 	defer rows.Close()
-	page := SearchPage{Articles: make([]SearchResult, 0, request.Limit)}
+	page := SearchPage{Articles: make([]SearchResult, 0, request.Limit), TotalRecords: total}
 	for rows.Next() {
 		var result SearchResult
 		if err := rows.Scan(&result.ID, &result.MessageID, &result.Subject, &result.Author, &result.Date, &result.Unwanted); err != nil {

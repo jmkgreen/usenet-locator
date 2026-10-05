@@ -34,7 +34,9 @@ type Runner struct {
 func NewRunner(cfg config.Config, writer BatchWriter, finalizer jobs.Finalizer, guard accounts.Guard, quota accounts.QuotaConsumer, jobQuota jobs.TransferConsumer) Runner {
 	endpoints := make(map[string]config.EndpointConfig, len(cfg.Endpoints))
 	for _, endpoint := range cfg.Endpoints {
-		endpoints[endpoint.ID] = endpoint
+		if endpoint.IsEnabled() {
+			endpoints[endpoint.ID] = endpoint
+		}
 	}
 	accounts := make(map[string]config.AccountConfig, len(cfg.Accounts))
 	for _, account := range cfg.Accounts {

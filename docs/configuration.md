@@ -7,7 +7,9 @@ Use configuration files for ordinary application settings. Supply secrets separa
 Configuration should cover at least:
 
 - accounts and credentials references;
-- NNTP endpoints, ports, TLS/plaintext acknowledgement, and primary/supplementary role;
+- NNTP endpoints, ports, TLS/plaintext acknowledgement, primary role, and an
+  `enabled` flag. Exactly one enabled endpoint must be primary; disabled
+  endpoints retain historical evidence but receive no new scans.
 - account connection limits;
 - metered account limits;
 - indexing batch override and concurrency/resource limits;

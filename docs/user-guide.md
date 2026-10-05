@@ -27,6 +27,14 @@ The storage/coverage view separates locally stored newsgroups from
 endpoint-specific scan evidence. A complete interval on one endpoint is not a
 claim of completeness on another provider.
 
+Use **Timeline coverage** to select a group and browse years, then months, then
+days. A unit is complete only after every enabled endpoint has successfully
+covered it; a gap or pending clue identifies incomplete or active work. Select
+**Complete coverage** to queue only outstanding endpoint work. **Go to
+articles** opens the locally stored headers from the start of that period in
+chronological order and never starts NNTP work. The records-per-page selection
+is saved in this browser and applies to article lists.
+
 Use the **Retention watchlist** for groups whose retention should be checked
 regularly. Choose an interval between one hour and seven days. While the
 service is running, due entries receive the same bounded retention probe as

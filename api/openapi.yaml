@@ -166,6 +166,39 @@ paths:
       summary: List locally stored newsgroups and canonical article counts
       responses:
         '200': {description: Stored group counts, content: {application/json: {schema: {$ref: '#/components/schemas/NewsgroupList'}}}}
+  /newsgroups/{newsgroup}/timeline:
+    get:
+      operationId: listGroupTimeline
+      summary: List group timeline years, months, or days with aggregate enabled-endpoint coverage
+      parameters:
+        - {name: newsgroup, in: path, required: true, schema: {type: string}}
+        - {name: level, in: query, required: true, schema: {type: string, enum: [year, month, day]}}
+        - {name: start_date, in: query, schema: {type: string, format: date}}
+      responses:
+        '200': {description: Timeline units, content: {application/json: {schema: {$ref: '#/components/schemas/TimelinePage'}}}}
+  /newsgroups/{newsgroup}/timeline/complete:
+    post:
+      operationId: completeTimelinePeriod
+      summary: Queue gap-filling coverage only for enabled endpoints without successful or active work
+      parameters: [{name: newsgroup, in: path, required: true, schema: {type: string}}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/TimelineCompletionRequest'}}}
+      responses:
+        '200': {description: Period already complete}
+        '202': {description: Gap-filling work queued}
+  /newsgroups/{newsgroup}/headers:
+    get:
+      operationId: listChronologicalGroupHeaders
+      summary: List locally stored group headers oldest first; this endpoint never contacts NNTP
+      parameters:
+        - {name: newsgroup, in: path, required: true, schema: {type: string}}
+        - {name: start_date, in: query, schema: {type: string, format: date}}
+        - {name: end_date, in: query, schema: {type: string, format: date}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
+        - {name: cursor, in: query, schema: {type: string}}
+      responses:
+        '200': {description: Keyset-paginated chronological headers, content: {application/json: {schema: {$ref: '#/components/schemas/SearchPage'}}}}
   /coverage:
     get:
       operationId: listCoverage
@@ -343,10 +376,34 @@ components:
         unwanted: {type: boolean}
     SearchPage:
       type: object
-      required: [articles, next_cursor]
+      required: [articles, next_cursor, total_records, page_size]
       properties:
         articles: {type: array, items: {$ref: '#/components/schemas/ArticleSummary'}}
         next_cursor: {type: string}
+        total_records: {type: integer, format: int64, minimum: 0}
+        page_size: {type: integer, minimum: 1, maximum: 100}
+    TimelineCompletionRequest:
+      type: object
+      required: [start_date, end_date]
+      properties:
+        start_date: {type: string, format: date}
+        end_date: {type: string, format: date}
+    TimelinePage:
+      type: object
+      required: [periods]
+      properties:
+        periods:
+          type: array
+          items:
+            type: object
+            required: [level, start_date, end_date, article_count, state, endpoints]
+            properties:
+              level: {type: string, enum: [year, month, day]}
+              start_date: {type: string, format: date}
+              end_date: {type: string, format: date}
+              article_count: {type: integer, format: int64}
+              state: {type: string, enum: [complete, pending, gaps]}
+              endpoints: {type: array, items: {type: object, required: [endpoint, state], properties: {endpoint: {type: string}, state: {type: string, enum: [complete, pending, gaps]}}}}
     ArticleDetail:
       allOf:
         - $ref: '#/components/schemas/ArticleSummary'
@@ -372,6 +429,7 @@ components:
         port: {type: integer}
         tls: {type: boolean}
         primary: {type: boolean}
+        enabled: {type: boolean}
         priority: {type: integer}
         connection_in_use: {type: integer, minimum: 0}
         connection_limit: {type: integer, minimum: 1}

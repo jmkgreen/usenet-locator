@@ -23,6 +23,7 @@ import (
 	"github.com/jmkgreen/usenet-locator/backend/internal/providers"
 	"github.com/jmkgreen/usenet-locator/backend/internal/qualification"
 	"github.com/jmkgreen/usenet-locator/backend/internal/retention"
+	"github.com/jmkgreen/usenet-locator/backend/internal/timeline"
 	"github.com/jmkgreen/usenet-locator/backend/internal/watchlist"
 )
 
@@ -46,6 +47,10 @@ type WatchlistService interface {
 	List(context.Context) ([]watchlist.Item, error)
 	Add(context.Context, string, int) (watchlist.Item, error)
 	Remove(context.Context, string) error
+}
+type TimelineService interface {
+	List(context.Context, string, string, *time.Time) ([]timeline.Period, error)
+	Complete(context.Context, string, time.Time, time.Time) (string, error)
 }
 
 // NewHandler returns the base Stage 1 HTTP router without optional services.
@@ -225,6 +230,77 @@ func WithStorageBrowser(next http.Handler, groups articles.GroupLister, coverage
 	})
 }
 
+// WithTimeline exposes the aggregate calendar while retaining the underlying
+// endpoint-specific evidence in every response.
+func WithTimeline(next http.Handler, service TimelineService) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		const prefix = "/api/v1/newsgroups/"
+		if !strings.HasPrefix(r.URL.Path, prefix) || !strings.Contains(r.URL.Path, "/timeline") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		path := strings.TrimPrefix(r.URL.Path, prefix)
+		if r.Method == http.MethodGet && strings.HasSuffix(path, "/timeline") {
+			group := strings.TrimSuffix(path, "/timeline")
+			level := r.URL.Query().Get("level")
+			if level == "" {
+				level = "year"
+			}
+			var start *time.Time
+			if raw := r.URL.Query().Get("start_date"); raw != "" {
+				value, err := time.Parse("2006-01-02", raw)
+				if err != nil {
+					writeJSON(w, http.StatusBadRequest, map[string]string{"error": "start_date must be YYYY-MM-DD"})
+					return
+				}
+				start = &value
+			}
+			periods, err := service.List(r.Context(), group, level, start)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid timeline request"})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"periods": periods})
+			return
+		}
+		if r.Method == http.MethodPost && strings.HasSuffix(path, "/timeline/complete") {
+			group := strings.TrimSuffix(path, "/timeline/complete")
+			var body struct {
+				StartDate string `json:"start_date"`
+				EndDate   string `json:"end_date"`
+			}
+			decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10))
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&body); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON request"})
+				return
+			}
+			start, err := time.Parse("2006-01-02", body.StartDate)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "start_date must be YYYY-MM-DD"})
+				return
+			}
+			end, err := time.Parse("2006-01-02", body.EndDate)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "end_date must be YYYY-MM-DD"})
+				return
+			}
+			id, err := service.Complete(r.Context(), group, start, end)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "could not queue coverage completion"})
+				return
+			}
+			if id == "" {
+				writeJSON(w, http.StatusOK, map[string]any{"state": "complete", "job_id": nil})
+			} else {
+				writeJSON(w, http.StatusAccepted, map[string]any{"state": "queued", "job_id": id})
+			}
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // WithWatchlist exposes a small persisted list of groups for recurring,
 // bounded retention probes. Creating or editing a list entry never contacts NNTP.
 func WithWatchlist(next http.Handler, service WatchlistService) http.Handler {
@@ -348,12 +424,40 @@ func WithChronologicalBrowser(next http.Handler, lister articles.ChronologicalLi
 			}
 			limit = value
 		}
-		page, err := lister.Chronological(r.Context(), group, r.URL.Query().Get("cursor"), limit)
+		var start, end *time.Time
+		if raw := r.URL.Query().Get("start_date"); raw != "" {
+			value, parseErr := time.Parse("2006-01-02", raw)
+			if parseErr != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid chronological request"})
+				return
+			}
+			start = &value
+		}
+		if raw := r.URL.Query().Get("end_date"); raw != "" {
+			value, parseErr := time.Parse("2006-01-02", raw)
+			if parseErr != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid chronological request"})
+				return
+			}
+			value = value.AddDate(0, 0, 1)
+			end = &value
+		}
+		var page articles.SearchPage
+		var err error
+		if periodLister, ok := lister.(articles.PeriodChronologicalLister); ok {
+			page, err = periodLister.ChronologicalPeriod(r.Context(), group, start, end, r.URL.Query().Get("cursor"), limit)
+		} else {
+			if start != nil || end != nil {
+				writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "period browsing unavailable"})
+				return
+			}
+			page, err = lister.Chronological(r.Context(), group, r.URL.Query().Get("cursor"), limit)
+		}
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid chronological request"})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"articles": page.Articles, "next_cursor": page.NextCursor})
+		writeJSON(w, http.StatusOK, map[string]any{"articles": page.Articles, "next_cursor": page.NextCursor, "total_records": page.TotalRecords, "page_size": limit})
 	})
 }
 
@@ -543,7 +647,7 @@ func searchArticles(searcher articles.Searcher) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid search request"})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"articles": page.Articles, "next_cursor": page.NextCursor})
+		writeJSON(w, http.StatusOK, map[string]any{"articles": page.Articles, "next_cursor": page.NextCursor, "total_records": page.TotalRecords, "page_size": request.Limit})
 	}
 }
 

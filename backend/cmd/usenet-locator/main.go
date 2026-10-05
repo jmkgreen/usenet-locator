@@ -21,6 +21,7 @@ import (
 	"github.com/jmkgreen/usenet-locator/backend/internal/qualification"
 	"github.com/jmkgreen/usenet-locator/backend/internal/retention"
 	"github.com/jmkgreen/usenet-locator/backend/internal/retrieval"
+	"github.com/jmkgreen/usenet-locator/backend/internal/timeline"
 	"github.com/jmkgreen/usenet-locator/backend/internal/watchlist"
 )
 
@@ -80,6 +81,7 @@ func main() {
 	handler = httpapi.WithRetention(handler, retentionService)
 	handler = httpapi.WithWatchlist(handler, watchlistStore)
 	handler = httpapi.WithChronologicalBrowser(handler, articles.NewStore(db.Pool))
+	handler = httpapi.WithTimeline(handler, timeline.NewStore(db.Pool, jobStore))
 	handler = httpapi.WithMetrics(handler, func() httpapi.MetricSnapshot {
 		stat := db.Pool.Stat()
 		return httpapi.MetricSnapshot{DBAcquiredConns: stat.AcquiredConns(), DBIdleConns: stat.IdleConns(), DBAcquireCount: stat.AcquireCount()}

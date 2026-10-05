@@ -22,8 +22,11 @@ const (
 )
 
 type CreateRequest struct {
-	NewsgroupID        string
-	EndpointID         string
+	NewsgroupID string
+	EndpointID  string
+	// EndpointIDs optionally narrows a fan-out request to these enabled endpoints.
+	// It is used by timeline completion to avoid rescanning successful coverage.
+	EndpointIDs        []string
 	StartDate          time.Time
 	EndDate            time.Time
 	MarginDays         int

@@ -98,3 +98,24 @@ test("watchlist failures are shown to the operator", async () => {
   await click("Show watchlist");
   expect(document.body.textContent).toContain("unavailable");
 });
+
+test("timeline exposes gap completion and read-only chronological navigation", async () => {
+  const fetchMock = vi.fn(async (input: string | URL, options?: RequestInit) => {
+    const url = String(input);
+    if (url.startsWith("/api/v1/newsgroups/comp.timeline/timeline?")) return new Response(JSON.stringify({ periods: [{ level: "year", start_date: "2020-01-01", end_date: "2020-12-31", article_count: 2, state: "gaps", endpoints: [{ endpoint: "primary", state: "gaps" }] }] }), { status: 200 });
+    if (url === "/api/v1/newsgroups/comp.timeline/timeline/complete" && options?.method === "POST") return new Response(JSON.stringify({ state: "queued", job_id: "timeline-job" }), { status: 202 });
+    if (url === "/api/v1/jobs/timeline-job") return new Response(JSON.stringify({ id: "timeline-job", newsgroup: "comp.timeline", endpoint: "primary", state: "queued", headers_retrieved: 0, articles_stored: 0 }), { status: 200 });
+    if (url.startsWith("/api/v1/newsgroups/comp.timeline/headers?")) return new Response(JSON.stringify({ articles: [{ id: 1, message_id: "<timeline@test>", subject: "Timeline", author: "A", date: "2020-01-01T00:00:00Z", unwanted: false }], next_cursor: "", total_records: 1, page_size: 50 }), { status: 200 });
+    return new Response(JSON.stringify({ periods: [] }), { status: 200 });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  await act(async () => { root.render(<App />); });
+  const timelineSection = [...document.querySelectorAll("section")].find((section) => section.querySelector("h2")?.textContent === "Timeline coverage")!;
+  const timelineInput = timelineSection.querySelector("input") as HTMLInputElement;
+  await act(async () => { setValue(timelineInput, "comp.timeline"); });
+  await click("Browse");
+  expect(document.body.textContent).toContain("gaps");
+  await click("Complete coverage");
+  await click("Go to articles");
+  expect(document.body.textContent).toContain("Timeline");
+});

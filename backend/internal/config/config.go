@@ -37,9 +37,14 @@ type EndpointConfig struct {
 	TLS                   bool   `json:"tls"`
 	PlaintextAcknowledged bool   `json:"plaintext_acknowledged"`
 	Primary               bool   `json:"primary"`
-	Priority              int    `json:"priority"`
-	OverviewCommand       string `json:"overview_command,omitempty"`
+	// Enabled defaults to true when omitted, preserving existing configurations.
+	// Disabled endpoints remain configured but do not receive new indexing work.
+	Enabled         *bool  `json:"enabled,omitempty"`
+	Priority        int    `json:"priority"`
+	OverviewCommand string `json:"overview_command,omitempty"`
 }
+
+func (e EndpointConfig) IsEnabled() bool { return e.Enabled == nil || *e.Enabled }
 
 type ResourceConfig struct {
 	ActiveJobs    int `json:"active_jobs"`
@@ -118,7 +123,10 @@ func (c Config) Validate() error {
 		if endpoint.OverviewCommand != "" && endpoint.OverviewCommand != "auto" && endpoint.OverviewCommand != "over" && endpoint.OverviewCommand != "xover" {
 			return fmt.Errorf("endpoint %q overview_command must be auto, over, or xover", endpoint.ID)
 		}
-		if endpoint.Primary {
+		if endpoint.Primary && !endpoint.IsEnabled() {
+			return fmt.Errorf("primary endpoint %q must be enabled", endpoint.ID)
+		}
+		if endpoint.Primary && endpoint.IsEnabled() {
 			primaryCount++
 		}
 		endpointIDs[endpoint.ID] = struct{}{}

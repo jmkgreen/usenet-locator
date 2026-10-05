@@ -38,7 +38,7 @@ Checkpoint semantics SHALL be explicit in the technical design. A checkpoint mus
 
 ## 4. Provider use
 
-A primary endpoint performs the normal scan. Multiple providers/endpoints can be configured from Stage 1, but advanced supplementary coverage is deferred.
+All enabled endpoints participate in normal fan-out scans. A disabled endpoint keeps its historical evidence but receives no new work and does not block aggregate completion.
 
 Transient errors should be retried according to a bounded policy. Persistent endpoint errors should become visible and should not necessarily stop unrelated work on healthy endpoints.
 
@@ -48,7 +48,7 @@ Account-level connection and usage limits SHALL be respected even when multiple 
 
 Coverage is endpoint + newsgroup specific.
 
-The UI/API SHALL avoid statements such as “complete” when only one endpoint has been scanned. Useful states may include scanned ranges, gaps/errors, date margins, last scan, and endpoint-specific availability. Exact terminology is an implementation/design decision, but it must not overclaim certainty.
+The UI/API SHALL avoid statements such as “complete” when only one endpoint has been scanned. A timeline unit may be aggregate-`complete` only when every enabled endpoint has successful durable evidence for its exact UTC interval. `pending` means one or more enabled endpoints have outstanding work; `gaps` means one or more have no successful evidence. Endpoint-specific states/reasons remain visible and this never claims global Usenet completeness.
 
 ## 6. Supplementary scanning (later stage)
 

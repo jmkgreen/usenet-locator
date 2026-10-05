@@ -39,13 +39,13 @@ func (db *DB) SyncConfiguration(ctx context.Context, cfg config.Config) error {
 	}
 	for _, endpoint := range cfg.Endpoints {
 		_, err := tx.Exec(ctx, `INSERT INTO nntp_endpoints
-            (id, account_id, host, port, tls_enabled, plaintext_acknowledged, is_primary, priority)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            (id, account_id, host, port, tls_enabled, plaintext_acknowledged, is_primary, priority, enabled)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             ON CONFLICT (id) DO UPDATE SET account_id = EXCLUDED.account_id, host = EXCLUDED.host,
-            port = EXCLUDED.port, tls_enabled = EXCLUDED.tls_enabled, enabled = TRUE,
+			port = EXCLUDED.port, tls_enabled = EXCLUDED.tls_enabled, enabled = EXCLUDED.enabled,
             plaintext_acknowledged = EXCLUDED.plaintext_acknowledged,
             is_primary = EXCLUDED.is_primary, priority = EXCLUDED.priority, updated_at = now()`,
-			endpoint.ID, endpoint.AccountID, endpoint.Host, endpoint.Port, endpoint.TLS, endpoint.PlaintextAcknowledged, endpoint.Primary, endpoint.Priority)
+			endpoint.ID, endpoint.AccountID, endpoint.Host, endpoint.Port, endpoint.TLS, endpoint.PlaintextAcknowledged, endpoint.Primary, endpoint.Priority, endpoint.IsEnabled())
 		if err != nil {
 			return fmt.Errorf("sync endpoint %q: %w", endpoint.ID, err)
 		}

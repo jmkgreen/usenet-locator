@@ -49,6 +49,7 @@ Requirements:
 
 - Configure a primary indexing endpoint.
 - Support an ordered endpoint preference for scanning and later retrieval. The initial ordering may reflect expected article completeness and provider knowledge; it need not duplicate another client's selection algorithm.
+- Each endpoint SHALL have an enabled setting. Exactly one enabled endpoint is primary. Disabled endpoints retain their historical evidence but receive no new work and do not block aggregate coverage completion.
 - Configure connection limits per account independently of other clients.
 - Support provider-required credentials.
 - Support configurable monthly or total transfer allowances for metered accounts and suspend use when a configured limit is reached.
@@ -130,6 +131,8 @@ Initial web UI SHALL include:
 
 - header search and article reading;
 - a storage/coverage browser that starts with a list of stored newsgroups and their article counts, then permits drill-down into date ranges and individual articles;
+- a group timeline that drills from known years to months to days, with a UTC date jump for a previously unseen period. Each unit SHALL show stored-header count, endpoint-specific evidence, and aggregate state: `complete` only when every enabled endpoint successfully covered the exact unit; `pending` while coverage work is outstanding; otherwise `gaps`.
+- each timeline unit SHALL offer a gap-filling completion action and a go-to action. Completion queues only endpoints without successful or outstanding coverage. Go-to opens already stored headers within the period oldest first and SHALL not contact NNTP.
 - basic indexing-job creation/status/pause/resume controls;
 - conventional paginated search results with sorting and filtering;
 - individual and batch unwanted-mark controls, with an explicit option to
@@ -147,6 +150,8 @@ Essential search filters:
 - date range.
 
 Individual articles are the default result representation.
+
+All article-list views SHALL use bounded keyset pagination, return total matching records, and use the same browser-profile records-per-page preference (default 50, maximum 100). Date-bounded lists exclude date-less headers; those headers remain available through non-date-bounded browsing.
 
 ## 9. Binary grouping and NZB — later enhancement
 

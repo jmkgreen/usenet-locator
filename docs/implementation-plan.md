@@ -23,7 +23,7 @@ Identify genuine requirement conflicts rather than silently resolving them by dr
 Deliver:
 
 - multiple configurable NNTP providers/endpoints/accounts;
-- historical header indexing fanned out to configured providers, with
+- historical header indexing fanned out to enabled providers, with
   endpoint-specific coverage and merged canonical results;
 - PostgreSQL persistence and endpoint-specific coverage;
 - durable jobs/checkpoints and manual pause/resume;
@@ -78,6 +78,15 @@ Add a provider-agnostic chronological header browser:
 - tests for cross-provider Message-ID deduplication, ordering ties, cursor
   stability, empty/partial coverage, and the guarantee that ordinary older or
   newer navigation makes no NNTP request.
+
+Add the group timeline browser:
+
+- drill down from known years to months and days, with a UTC date jump for an
+  unseen period;
+- calculate aggregate completion only from durable successful evidence for all
+  enabled endpoints, while retaining visible endpoint-level gap/pending states;
+- provide gap-only completion and read-only period navigation; and
+- share page-size preference and total-record reporting with every article list.
 
 Implement MCP after REST/web are established. Reuse existing application services. Define read vs state-changing MCP operations and access controls before exposing them.
 

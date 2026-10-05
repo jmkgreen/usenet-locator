@@ -17,6 +17,7 @@ type Endpoint struct {
 	Port               int    `json:"port"`
 	TLS                bool   `json:"tls"`
 	Primary            bool   `json:"primary"`
+	Enabled            bool   `json:"enabled"`
 	Priority           int    `json:"priority"`
 	ConnectionInUse    int    `json:"connection_in_use"`
 	ConnectionLimit    int    `json:"connection_limit"`
@@ -35,7 +36,7 @@ type Service struct {
 func New(cfg config.Config, usage accounts.UsageReader, guard accounts.Guard) Service {
 	endpoints := make([]Endpoint, 0, len(cfg.Endpoints))
 	for _, source := range cfg.Endpoints {
-		endpoints = append(endpoints, Endpoint{ID: source.ID, AccountID: source.AccountID, Host: source.Host, Port: source.Port, TLS: source.TLS, Primary: source.Primary, Priority: source.Priority})
+		endpoints = append(endpoints, Endpoint{ID: source.ID, AccountID: source.AccountID, Host: source.Host, Port: source.Port, TLS: source.TLS, Primary: source.Primary, Enabled: source.IsEnabled(), Priority: source.Priority})
 	}
 	sort.Slice(endpoints, func(i, j int) bool {
 		if endpoints[i].Priority == endpoints[j].Priority {
