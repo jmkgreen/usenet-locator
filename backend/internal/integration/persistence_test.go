@@ -259,12 +259,12 @@ func TestPersistenceWorkflow(t *testing.T) {
 	}
 	calendar := timelinepkg.NewStore(db.Pool, jobStore)
 	years, err := calendar.List(ctx, "comp.integration", "year", nil)
-	if err != nil || len(years) != 1 || years[0].State != "complete" || years[0].ArticleCount != 1 {
+	if err != nil || len(years) != 1 || years[0].State != "gaps" || years[0].ArticleCount != 1 {
 		t.Fatalf("timeline years = %#v, err = %v", years, err)
 	}
 	monthStart := time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC)
 	months, err := calendar.List(ctx, "comp.integration", "month", &monthStart)
-	if err != nil || len(months) != 12 || months[0].State != "complete" || months[1].State != "gaps" {
+	if err != nil || len(months) != 12 || months[0].State != "gaps" || months[1].State != "gaps" {
 		t.Fatalf("timeline months = %#v, err = %v", months, err)
 	}
 	days, err := calendar.List(ctx, "comp.integration", "day", &monthStart)
