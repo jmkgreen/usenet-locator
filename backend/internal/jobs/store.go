@@ -247,7 +247,7 @@ func (s Store) Transition(ctx context.Context, id string, target State) error {
 		var command pgconn.CommandTag
 		switch target {
 		case Paused:
-			command, err = tx.Exec(ctx, "UPDATE index_jobs SET state = $1, updated_at = now() WHERE parent_job_id = $2 AND state = $3", target, id, Running)
+			command, err = tx.Exec(ctx, "UPDATE index_jobs SET state = $1, updated_at = now() WHERE parent_job_id = $2 AND state IN ($3, $4)", target, id, Queued, Running)
 		case Queued:
 			command, err = tx.Exec(ctx, "UPDATE index_jobs SET state = $1, updated_at = now() WHERE parent_job_id = $2 AND state IN ($3, $4)", target, id, Paused, Interrupted)
 		case Cancelled:

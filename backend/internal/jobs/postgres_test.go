@@ -106,6 +106,45 @@ func TestPostgresFanoutLifecycle(t *testing.T) {
 	if err := store.Transition(ctx, parentID, Paused); err == nil {
 		t.Fatal("accepted pause of an already completed parent")
 	}
+
+	// A running fan-out may be paused and later cancelled as a single operator
+	// action; its children must change with the parent rather than being left
+	// eligible for a worker to claim.
+	pausableID, err := store.Create(ctx, CreateRequest{NewsgroupID: "comp.pause", EndpointID: "primary", StartDate: date, EndDate: date})
+	if err != nil {
+		t.Fatalf("create pausable fan-out: %v", err)
+	}
+	if _, claimed, err := store.ClaimNext(ctx); err != nil || !claimed {
+		t.Fatalf("claim pausable child: claimed=%v err=%v", claimed, err)
+	}
+	if err := store.Transition(ctx, pausableID, Paused); err != nil {
+		t.Fatalf("pause running fan-out: %v", err)
+	}
+	if parent, err := store.Get(ctx, pausableID); err != nil || parent.State != Paused || len(parent.ProviderJobs) != 2 || parent.ProviderJobs[0].State != Paused || parent.ProviderJobs[1].State != Paused {
+		t.Fatalf("paused fan-out = %#v, err=%v", parent, err)
+	}
+	if err := store.Transition(ctx, pausableID, Cancelled); err != nil {
+		t.Fatalf("cancel paused fan-out: %v", err)
+	}
+	if parent, err := store.Get(ctx, pausableID); err != nil || parent.State != Cancelled || parent.ProviderJobs[0].State != Cancelled || parent.ProviderJobs[1].State != Cancelled {
+		t.Fatalf("cancelled fan-out = %#v, err=%v", parent, err)
+	}
+
+	// Restart recovery must make worker-owned running jobs visible for an
+	// explicit operator resume rather than silently re-running them.
+	recoverID, err := store.Create(ctx, CreateRequest{NewsgroupID: "comp.recover", EndpointID: "primary", StartDate: date, EndDate: date})
+	if err != nil {
+		t.Fatalf("create recovery fan-out: %v", err)
+	}
+	if _, claimed, err := store.ClaimNext(ctx); err != nil || !claimed {
+		t.Fatalf("claim recovery child: claimed=%v err=%v", claimed, err)
+	}
+	if err := store.RecoverInterrupted(ctx); err != nil {
+		t.Fatalf("recover interrupted jobs: %v", err)
+	}
+	if parent, err := store.Get(ctx, recoverID); err != nil || parent.State != Queued || len(parent.ProviderJobs) != 2 || parent.ProviderJobs[0].State != Interrupted || parent.ProviderJobs[1].State != Queued || parent.LastError == nil {
+		t.Fatalf("recovered fan-out = %#v, err=%v", parent, err)
+	}
 }
 
 func jobsTestSuffix(t *testing.T) string {

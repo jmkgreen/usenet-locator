@@ -61,9 +61,14 @@ func Dial(ctx context.Context, endpoint Endpoint) (Client, error) {
 		conn = secure
 	}
 	c := &wireClient{conn: conn, text: textproto.NewConn(conn), ep: endpoint, meter: meter}
-	if _, _, err := c.status(ctx); err != nil {
+	code, _, err := c.status(ctx)
+	if err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("read NNTP greeting: %w", err)
+	}
+	if code != 200 && code != 201 {
+		_ = conn.Close()
+		return nil, fmt.Errorf("NNTP greeting rejected with %d", code)
 	}
 	return c, nil
 }

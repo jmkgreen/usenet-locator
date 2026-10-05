@@ -27,11 +27,12 @@ import (
 )
 
 type testJobs struct {
-	created jobs.CreateRequest
-	job     jobs.Job
-	getErr  error
-	target  jobs.State
-	moveErr error
+	created   jobs.CreateRequest
+	job       jobs.Job
+	createErr error
+	getErr    error
+	target    jobs.State
+	moveErr   error
 }
 
 type testPreferences struct {
@@ -46,9 +47,10 @@ func (s *testPreferences) SetUnwanted(_ context.Context, ids []int64, unwanted b
 }
 
 type testSearch struct {
-	request articles.SearchRequest
-	page    articles.SearchPage
-	err     error
+	request   articles.SearchRequest
+	page      articles.SearchPage
+	err       error
+	detailErr error
 }
 
 type testBodyFetcher struct {
@@ -173,6 +175,9 @@ func (s *testSearch) Search(_ context.Context, request articles.SearchRequest) (
 	return s.page, s.err
 }
 func (s *testSearch) GetDetail(_ context.Context, id int64) (articles.Detail, error) {
+	if s.detailErr != nil {
+		return articles.Detail{}, s.detailErr
+	}
 	if id == 4 {
 		return articles.Detail{ID: 4, MessageID: "<a@test>", Newsgroups: []string{"comp.lang.go"}}, nil
 	}
@@ -181,6 +186,9 @@ func (s *testSearch) GetDetail(_ context.Context, id int64) (articles.Detail, er
 
 func (s *testJobs) Create(_ context.Context, request jobs.CreateRequest) (string, error) {
 	s.created = request
+	if s.createErr != nil {
+		return "", s.createErr
+	}
 	return "9a84900b-5d31-4acb-b917-b73b5a7c9e32", nil
 }
 
@@ -321,6 +329,15 @@ func TestCreateJobRequiresMarginDays(t *testing.T) {
 	}
 }
 
+func TestCreateJobRejectsStoreFailureWithoutLeakingDetails(t *testing.T) {
+	store := &testJobs{createErr: errors.New("database diagnostic")}
+	res := httptest.NewRecorder()
+	NewHandlerWithDependencies("test", func(context.Context) error { return nil }, store, store).ServeHTTP(res, httptest.NewRequest(http.MethodPost, "/api/v1/jobs", strings.NewReader(`{"newsgroup":"comp.lang.go","endpoint":"primary","start_date":"2020-01-01","end_date":"2020-01-02","margin_days":1}`)))
+	if res.Code != http.StatusInternalServerError || strings.Contains(res.Body.String(), "diagnostic") {
+		t.Fatalf("status=%d body=%s", res.Code, res.Body.String())
+	}
+}
+
 func TestGetJob(t *testing.T) {
 	t.Parallel()
 	store := &testJobs{job: jobs.Job{
@@ -348,6 +365,21 @@ func TestGetJobNotFound(t *testing.T) {
 
 	if res.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+}
+
+func TestGetJobAndTransitionHideStorageFailures(t *testing.T) {
+	getStore := &testJobs{getErr: errors.New("database diagnostic")}
+	get := httptest.NewRecorder()
+	NewHandlerWithDependencies("test", func(context.Context) error { return nil }, getStore, getStore).ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/api/v1/jobs/job-1", nil))
+	if get.Code != http.StatusInternalServerError || strings.Contains(get.Body.String(), "diagnostic") {
+		t.Fatalf("get response=%d %s", get.Code, get.Body.String())
+	}
+	transitionStore := &testJobs{moveErr: errors.New("database diagnostic")}
+	transition := httptest.NewRecorder()
+	NewHandlerWithDependencies("test", func(context.Context) error { return nil }, transitionStore, transitionStore).ServeHTTP(transition, httptest.NewRequest(http.MethodPost, "/api/v1/jobs/job-1/cancel", nil))
+	if transition.Code != http.StatusInternalServerError || strings.Contains(transition.Body.String(), "diagnostic") {
+		t.Fatalf("transition response=%d %s", transition.Code, transition.Body.String())
 	}
 }
 
@@ -406,6 +438,25 @@ func TestSearchParsesInclusiveDates(t *testing.T) {
 	}
 }
 
+func TestSearchRejectsMalformedInputAndStoreFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name, query string
+		search      *testSearch
+	}{
+		{name: "malformed start date", query: "?start_date=not-a-date", search: &testSearch{}},
+		{name: "malformed end date", query: "?end_date=not-a-date", search: &testSearch{}},
+		{name: "invalid store request", query: "?newsgroup=comp.lang.go", search: &testSearch{err: errors.New("database diagnostic")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := httptest.NewRecorder()
+			NewHandlerWithServices("test", func(context.Context) error { return nil }, nil, nil, tc.search).ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/search"+tc.query, nil))
+			if res.Code != http.StatusBadRequest || strings.Contains(res.Body.String(), "diagnostic") {
+				t.Fatalf("status=%d body=%s", res.Code, res.Body.String())
+			}
+		})
+	}
+}
+
 func TestGetArticleDetail(t *testing.T) {
 	t.Parallel()
 	handler := NewHandlerWithServices("test", func(context.Context) error { return nil }, nil, nil, &testSearch{})
@@ -413,6 +464,27 @@ func TestGetArticleDetail(t *testing.T) {
 	handler.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/articles/4", nil))
 	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"id":4`) {
 		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+}
+
+func TestGetArticleRejectsInvalidAndStorageFailureSafely(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		path  string
+		store *testSearch
+		want  int
+	}{
+		{name: "invalid ID", path: "/api/v1/articles/not-a-number", store: &testSearch{}, want: http.StatusNotFound},
+		{name: "missing article", path: "/api/v1/articles/99", store: &testSearch{}, want: http.StatusNotFound},
+		{name: "storage failure", path: "/api/v1/articles/4", store: &testSearch{detailErr: errors.New("database diagnostic")}, want: http.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := httptest.NewRecorder()
+			NewHandlerWithServices("test", func(context.Context) error { return nil }, nil, nil, tc.store).ServeHTTP(res, httptest.NewRequest(http.MethodGet, tc.path, nil))
+			if res.Code != tc.want || strings.Contains(res.Body.String(), "diagnostic") {
+				t.Fatalf("status=%d body=%s", res.Code, res.Body.String())
+			}
+		})
 	}
 }
 

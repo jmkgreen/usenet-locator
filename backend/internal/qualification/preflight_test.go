@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,20 +20,30 @@ type preflightClient struct {
 	group              nntp.Group
 	overview           []nntp.Overview
 	transfer           int64
+	authErr            error
+	capsErr            error
+	modeErr            error
+	formatErr          error
+	statErr            error
+	groupErr           error
+	overviewErr        error
 }
 
 func (c *preflightClient) Authenticate(_ context.Context, username, password string) error {
 	c.username, c.password = username, password
-	return nil
+	return c.authErr
 }
 func (c *preflightClient) Capabilities(context.Context) ([]string, error) {
-	return []string{"reader", "OVER", "X-Provider-Internal secret", "list active"}, nil
+	return []string{"reader", "OVER", "X-Provider-Internal secret", "list active"}, c.capsErr
 }
-func (c *preflightClient) ModeReader(context.Context) error { return nil }
+func (c *preflightClient) ModeReader(context.Context) error { return c.modeErr }
 func (c *preflightClient) Group(context.Context, string) (nntp.Group, error) {
-	return c.group, nil
+	return c.group, c.groupErr
 }
 func (c *preflightClient) Overview(_ context.Context, _, _ int64, emit func(nntp.Overview) error) error {
+	if c.overviewErr != nil {
+		return c.overviewErr
+	}
 	for _, item := range c.overview {
 		if err := emit(item); err != nil {
 			return err
@@ -43,9 +54,9 @@ func (c *preflightClient) Overview(_ context.Context, _, _ int64, emit func(nntp
 func (c *preflightClient) Body(context.Context, int64, int64, io.Writer) error { return nil }
 func (c *preflightClient) Close() error                                        { return nil }
 func (c *preflightClient) OverviewFormat(context.Context) (nntp.OverviewFormat, error) {
-	return nntp.OverviewFormat{Code: 215, Fields: []string{"subject", "date"}}, nil
+	return nntp.OverviewFormat{Code: 215, Fields: []string{"subject", "date"}}, c.formatErr
 }
-func (c *preflightClient) Stat(context.Context, string) (int, error) { return 42, nil }
+func (c *preflightClient) Stat(context.Context, string) (int, error) { return 42, c.statErr }
 func (c *preflightClient) TransferBytes() int64                      { return c.transfer }
 
 type recordedQuota struct {
@@ -139,5 +150,35 @@ func TestRunReturnsQuotaErrorOnlyAfterSuccessfulProbe(t *testing.T) {
 	_, err := preflightService(t, client, quota, nil).Run(context.Background(), "endpoint", "", "", 0)
 	if !errors.Is(err, accounts.ErrQuotaExceeded) {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestRunUsesFixedFailureStagesWithoutProviderText(t *testing.T) {
+	providerErr := errors.New("provider transcript secret")
+	for _, tc := range []struct {
+		name, messageID, group, want string
+		article                      int64
+		configure                    func(*preflightClient)
+		history                      HistoryStore
+	}{
+		{name: "authentication", want: "authentication failed", configure: func(c *preflightClient) { c.authErr = providerErr }},
+		{name: "capabilities", want: "capability negotiation failed", configure: func(c *preflightClient) { c.capsErr = providerErr }},
+		{name: "reader mode", want: "reader mode failed", configure: func(c *preflightClient) { c.modeErr = providerErr }},
+		{name: "overview format", want: "overview format check failed", configure: func(c *preflightClient) { c.formatErr = providerErr }},
+		{name: "stat", messageID: "<probe@test>", want: "STAT check failed", configure: func(c *preflightClient) { c.statErr = providerErr }},
+		{name: "group", group: "alt.test", want: "newsgroup selection failed", configure: func(c *preflightClient) { c.groupErr = providerErr }},
+		{name: "empty group", group: "alt.test", want: "newsgroup has no articles", configure: func(c *preflightClient) { c.group = nntp.Group{Low: 1, High: 0} }},
+		{name: "outside group", group: "alt.test", article: 2, want: "article number outside selected group", configure: func(c *preflightClient) { c.group = nntp.Group{Low: 1, High: 1} }},
+		{name: "overview", group: "alt.test", article: 1, want: "overview check failed", configure: func(c *preflightClient) { c.group = nntp.Group{Low: 1, High: 1}; c.overviewErr = providerErr }},
+		{name: "history", want: "record qualification failed", configure: func(c *preflightClient) {}, history: &recordedHistory{err: providerErr}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &preflightClient{}
+			tc.configure(client)
+			_, err := preflightService(t, client, nil, tc.history).Run(context.Background(), "endpoint", tc.messageID, tc.group, tc.article)
+			if err == nil || err.Error() != tc.want || strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "transcript") {
+				t.Fatalf("error = %v", err)
+			}
+		})
 	}
 }

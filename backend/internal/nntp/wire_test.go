@@ -133,6 +133,45 @@ func TestDialRejectsMissingTimeouts(t *testing.T) {
 	}
 }
 
+func TestDialPlaintextReadsGreetingAndRejectsUnusableGreeting(t *testing.T) {
+	for _, tc := range []struct {
+		name, greeting string
+		wantErr        bool
+	}{
+		{name: "ready", greeting: "200 reader ready\r\n"},
+		{name: "rejected", greeting: "500 provider diagnostic\r\n", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			go func() {
+				conn, acceptErr := listener.Accept()
+				if acceptErr != nil {
+					return
+				}
+				defer conn.Close()
+				_, _ = io.WriteString(conn, tc.greeting)
+			}()
+			client, err := Dial(context.Background(), Endpoint{Address: listener.Addr().String(), ConnectTimeout: time.Second, ReadTimeout: time.Second})
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("Dial accepted unusable greeting")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Dial: %v", err)
+			}
+			if err := client.Close(); err != nil {
+				t.Fatalf("close client: %v", err)
+			}
+		})
+	}
+}
+
 func TestGroupReadTimesOut(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	t.Cleanup(func() { _ = clientConn.Close() })
@@ -283,6 +322,44 @@ func TestStatReturnsArticleNumberWithoutResponseText(t *testing.T) {
 	c := &wireClient{conn: clientConn, text: textproto.NewConn(clientConn), ep: Endpoint{ReadTimeout: time.Second}}
 	if number, err := c.Stat(context.Background(), "<probe@example>"); err != nil || number != 41 {
 		t.Fatalf("Stat() = %d, %v", number, err)
+	}
+}
+
+func TestStatAndBodyRejectUnsafeOrUnusableResponses(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	c := &wireClient{conn: clientConn, text: textproto.NewConn(clientConn), ep: Endpoint{ReadTimeout: time.Second}}
+	if _, err := c.Stat(context.Background(), "<valid@test>\r\nGROUP injected"); err == nil {
+		t.Fatal("STAT accepted CRLF-injected Message-ID")
+	}
+	if err := c.Body(context.Background(), 0, 1, io.Discard); err == nil {
+		t.Fatal("BODY accepted an invalid article number")
+	}
+	if err := c.Body(context.Background(), 1, 0, io.Discard); err == nil {
+		t.Fatal("BODY accepted a zero byte limit")
+	}
+	if err := c.Body(context.Background(), 1, 1, nil); err == nil {
+		t.Fatal("BODY accepted a nil destination")
+	}
+}
+
+func TestBodyRejectsNonBodyStatusWithoutServerText(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	go func() {
+		defer serverConn.Close()
+		r, w := bufio.NewReader(serverConn), bufio.NewWriter(serverConn)
+		if line, _ := r.ReadString('\n'); line != "BODY 1\r\n" {
+			return
+		}
+		_, _ = w.WriteString("430 provider diagnostic secret\r\n")
+		_ = w.Flush()
+	}()
+	c := &wireClient{conn: clientConn, text: textproto.NewConn(clientConn), ep: Endpoint{ReadTimeout: time.Second}}
+	err := c.Body(context.Background(), 1, 10, io.Discard)
+	if err == nil || strings.Contains(err.Error(), "secret") || !strings.Contains(err.Error(), "430") {
+		t.Fatalf("Body error = %v", err)
 	}
 }
 
