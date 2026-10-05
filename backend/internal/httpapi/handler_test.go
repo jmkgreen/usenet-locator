@@ -3,8 +3,11 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -16,6 +19,7 @@ import (
 	"github.com/jmkgreen/usenet-locator/backend/internal/config"
 	"github.com/jmkgreen/usenet-locator/backend/internal/indexing"
 	"github.com/jmkgreen/usenet-locator/backend/internal/jobs"
+	"github.com/jmkgreen/usenet-locator/backend/internal/nntp"
 	"github.com/jmkgreen/usenet-locator/backend/internal/providers"
 	"github.com/jmkgreen/usenet-locator/backend/internal/qualification"
 	"github.com/jmkgreen/usenet-locator/backend/internal/retention"
@@ -56,6 +60,32 @@ type testQualificationHistory struct {
 	items []qualification.History
 	err   error
 }
+
+type apiPreflightClient struct{}
+
+func (apiPreflightClient) Authenticate(context.Context, string, string) error { return nil }
+func (apiPreflightClient) Capabilities(context.Context) ([]string, error) {
+	return []string{"reader", "OVER", "provider secret diagnostic"}, nil
+}
+func (apiPreflightClient) ModeReader(context.Context) error { return nil }
+func (apiPreflightClient) Group(context.Context, string) (nntp.Group, error) {
+	return nntp.Group{Low: 1, High: 1}, nil
+}
+func (apiPreflightClient) Overview(_ context.Context, _ int64, _ int64, emit func(nntp.Overview) error) error {
+	return emit(nntp.Overview{ArticleNumber: 1, MessageID: "<safe@test>", Date: time.Now()})
+}
+func (apiPreflightClient) Body(context.Context, int64, int64, io.Writer) error { return nil }
+func (apiPreflightClient) Close() error                                        { return nil }
+func (apiPreflightClient) OverviewFormat(context.Context) (nntp.OverviewFormat, error) {
+	return nntp.OverviewFormat{Code: 215, Fields: []string{"subject"}}, nil
+}
+func (apiPreflightClient) Stat(context.Context, string) (int, error) { return 223, nil }
+func (apiPreflightClient) TransferBytes() int64                      { return 1 }
+
+type quotaFailure struct{ err error }
+
+func (q quotaFailure) Consume(context.Context, string, int64) error { return q.err }
+
 type testRetention struct {
 	items          []retention.Observation
 	err            error
@@ -445,6 +475,49 @@ func TestProviderQualificationHistoryReturnsSafeRecords(t *testing.T) {
 	handler.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/providers/primary/qualifications", nil))
 	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"overview_code":224`) || strings.Contains(res.Body.String(), "password") {
 		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+}
+
+func TestProviderPreflightRouteRunsBoundedCheckAndFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	username, password := filepath.Join(dir, "username"), filepath.Join(dir, "password")
+	if err := os.WriteFile(username, []byte("operator\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(password, []byte("not-for-response\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{Accounts: []config.AccountConfig{{ID: "account", UsernameFile: username, PasswordFile: password, ConnectionLimit: 1}}, Endpoints: []config.EndpointConfig{{ID: "primary", AccountID: "account", Host: "news.example", Port: 563, TLS: true}}}
+	service := qualification.New(cfg, accounts.NewGuard(cfg), nil)
+	service.History = testQualificationHistory{}
+	service.Dial = func(context.Context, nntp.Endpoint) (nntp.Client, error) { return apiPreflightClient{}, nil }
+	handler := WithProviderPreflight(NewHandler("test"), service)
+
+	invalid := httptest.NewRecorder()
+	handler.ServeHTTP(invalid, httptest.NewRequest(http.MethodPost, "/api/v1/providers/primary/preflight", strings.NewReader(`{"unexpected":true}`)))
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("invalid request = %d %s", invalid.Code, invalid.Body.String())
+	}
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/providers/primary/preflight", strings.NewReader(`{"message_id":"<probe@test>","newsgroup":"alt.test","article_number":1}`)))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"overview_code":224`) || strings.Contains(response.Body.String(), "secret") || strings.Contains(response.Body.String(), "not-for-response") {
+		t.Fatalf("preflight = %d %s", response.Code, response.Body.String())
+	}
+
+	quotaService := service
+	quotaService.Quota = quotaFailure{err: accounts.ErrQuotaExceeded}
+	quotaService.History = nil
+	quota := httptest.NewRecorder()
+	WithProviderPreflight(NewHandler("test"), quotaService).ServeHTTP(quota, httptest.NewRequest(http.MethodPost, "/api/v1/providers/primary/preflight", strings.NewReader(`{}`)))
+	if quota.Code != http.StatusTooManyRequests || strings.Contains(quota.Body.String(), "operator") {
+		t.Fatalf("quota response = %d %s", quota.Code, quota.Body.String())
+	}
+
+	missingHistory := httptest.NewRecorder()
+	WithProviderPreflight(NewHandler("test"), qualification.Service{}).ServeHTTP(missingHistory, httptest.NewRequest(http.MethodGet, "/api/v1/providers/primary/qualifications", nil))
+	if missingHistory.Code != http.StatusNotFound {
+		t.Fatalf("missing history = %d %s", missingHistory.Code, missingHistory.Body.String())
 	}
 }
 
