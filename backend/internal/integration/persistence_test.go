@@ -306,6 +306,9 @@ func TestPersistenceWorkflow(t *testing.T) {
 	if _, err := calendar.List(ctx, "", "year", nil); err == nil {
 		t.Fatal("accepted an empty timeline group")
 	}
+	if _, err := calendar.Complete(ctx, "", date, date); err == nil {
+		t.Fatal("accepted completion for an empty timeline group")
+	}
 }
 
 func createAndClaim(t *testing.T, ctx context.Context, store jobs.Store, group string, date time.Time) string {
