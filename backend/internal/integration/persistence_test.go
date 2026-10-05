@@ -285,6 +285,9 @@ func TestPersistenceWorkflow(t *testing.T) {
 	if id, err := calendar.Complete(ctx, "comp.integration", multiStart, multiStart.AddDate(0, 0, 1)); err != nil || id == "" {
 		t.Fatalf("complete multi-day gap = %q, %v", id, err)
 	}
+	if id, err := calendar.Complete(ctx, "comp.integration", multiStart, multiStart.AddDate(0, 0, 1)); err != nil || id != "" {
+		t.Fatalf("complete active multi-day period = %q, %v", id, err)
+	}
 	if _, err := calendar.Complete(ctx, "comp.integration", multiStart, multiStart.AddDate(0, 0, -1)); err == nil {
 		t.Fatal("accepted reversed timeline interval")
 	}
@@ -299,6 +302,9 @@ func TestPersistenceWorkflow(t *testing.T) {
 		if _, err := calendar.List(ctx, "comp.integration", request.level, request.start); err == nil {
 			t.Fatalf("accepted invalid timeline request %#v", request)
 		}
+	}
+	if _, err := calendar.List(ctx, "", "year", nil); err == nil {
+		t.Fatal("accepted an empty timeline group")
 	}
 }
 
