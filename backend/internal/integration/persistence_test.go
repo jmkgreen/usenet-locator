@@ -20,6 +20,7 @@ import (
 	"github.com/jmkgreen/usenet-locator/backend/internal/nntp"
 	"github.com/jmkgreen/usenet-locator/backend/internal/qualification"
 	"github.com/jmkgreen/usenet-locator/backend/internal/retention"
+	timelinepkg "github.com/jmkgreen/usenet-locator/backend/internal/timeline"
 	"github.com/jmkgreen/usenet-locator/backend/internal/watchlist"
 )
 
@@ -255,6 +256,27 @@ func TestPersistenceWorkflow(t *testing.T) {
 	secondPage, err := articleStore.Chronological(ctx, "comp.timeline", firstPage.NextCursor, 1)
 	if err != nil || len(secondPage.Articles) != 1 || secondPage.Articles[0].ID == firstPage.Articles[0].ID {
 		t.Fatalf("second chronological page = %#v, err = %v", secondPage, err)
+	}
+	calendar := timelinepkg.NewStore(db.Pool, jobStore)
+	years, err := calendar.List(ctx, "comp.integration", "year", nil)
+	if err != nil || len(years) != 1 || years[0].State != "complete" || years[0].ArticleCount != 1 {
+		t.Fatalf("timeline years = %#v, err = %v", years, err)
+	}
+	monthStart := time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC)
+	months, err := calendar.List(ctx, "comp.integration", "month", &monthStart)
+	if err != nil || len(months) != 12 || months[0].State != "complete" || months[1].State != "gaps" {
+		t.Fatalf("timeline months = %#v, err = %v", months, err)
+	}
+	days, err := calendar.List(ctx, "comp.integration", "day", &monthStart)
+	if err != nil || len(days) != 31 || days[1].State != "complete" {
+		t.Fatalf("timeline days = %#v, err = %v", days, err)
+	}
+	if id, err := calendar.Complete(ctx, "comp.integration", date, date); err != nil || id != "" {
+		t.Fatalf("complete known period = %q, %v", id, err)
+	}
+	missingDay := date.AddDate(0, 0, 10)
+	if id, err := calendar.Complete(ctx, "comp.integration", missingDay, missingDay); err != nil || id == "" {
+		t.Fatalf("complete missing period = %q, %v", id, err)
 	}
 }
 

@@ -23,6 +23,7 @@ import (
 	"github.com/jmkgreen/usenet-locator/backend/internal/providers"
 	"github.com/jmkgreen/usenet-locator/backend/internal/qualification"
 	"github.com/jmkgreen/usenet-locator/backend/internal/retention"
+	"github.com/jmkgreen/usenet-locator/backend/internal/timeline"
 	"github.com/jmkgreen/usenet-locator/backend/internal/watchlist"
 )
 
@@ -122,6 +123,32 @@ type testChronological struct {
 	group, cursor string
 	limit         int
 	err           error
+}
+
+type testTimeline struct {
+	periods              []timeline.Period
+	listErr, completeErr error
+	group, level         string
+	start, end           time.Time
+	completed            bool
+}
+
+func (s *testTimeline) List(_ context.Context, group, level string, start *time.Time) ([]timeline.Period, error) {
+	s.group, s.level = group, level
+	if start != nil {
+		s.start = *start
+	}
+	if level == "bad" || (level == "month" && start == nil) {
+		return nil, errors.New("invalid")
+	}
+	return s.periods, s.listErr
+}
+func (s *testTimeline) Complete(_ context.Context, group string, start, end time.Time) (string, error) {
+	s.group, s.start, s.end, s.completed = group, start, end, true
+	if s.completeErr != nil {
+		return "", s.completeErr
+	}
+	return "timeline-job", nil
 }
 
 func (s *testChronological) Chronological(_ context.Context, group, cursor string, limit int) (articles.SearchPage, error) {
@@ -715,6 +742,39 @@ func TestChronologicalRouteRejectsInvalidLimitAndNeverTouchesNNTP(t *testing.T) 
 	handler.ServeHTTP(good, httptest.NewRequest(http.MethodGet, "/api/v1/newsgroups/alt.test/headers?limit=2&cursor=opaque", nil))
 	if good.Code != http.StatusOK || lister.group != "alt.test" || lister.cursor != "opaque" || lister.limit != 2 || !strings.Contains(good.Body.String(), `"message_id"`) {
 		t.Fatalf("response = %d %s lister=%#v", good.Code, good.Body.String(), lister)
+	}
+}
+
+func TestTimelineRoutesExposeCoverageAndQueueGaps(t *testing.T) {
+	service := &testTimeline{periods: []timeline.Period{{Level: "year", StartDate: "2020-01-01", EndDate: "2020-12-31", State: "gaps", Endpoints: []timeline.EndpointState{{Endpoint: "primary", State: "gaps"}}}}}
+	handler := WithTimeline(NewHandler("test"), service)
+	list := httptest.NewRecorder()
+	handler.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/v1/newsgroups/alt.test/timeline?level=year&start_date=2020-01-01", nil))
+	if list.Code != http.StatusOK || service.group != "alt.test" || service.level != "year" || !strings.Contains(list.Body.String(), `"state":"gaps"`) {
+		t.Fatalf("list=%d %s service=%#v", list.Code, list.Body.String(), service)
+	}
+	complete := httptest.NewRecorder()
+	handler.ServeHTTP(complete, httptest.NewRequest(http.MethodPost, "/api/v1/newsgroups/alt.test/timeline/complete", strings.NewReader(`{"start_date":"2020-01-01","end_date":"2020-01-31"}`)))
+	if complete.Code != http.StatusAccepted || !service.completed || service.end.Format("2006-01-02") != "2020-01-31" || !strings.Contains(complete.Body.String(), "timeline-job") {
+		t.Fatalf("complete=%d %s service=%#v", complete.Code, complete.Body.String(), service)
+	}
+	for _, path := range []string{"/api/v1/newsgroups/alt.test/timeline?level=month", "/api/v1/newsgroups/alt.test/timeline?level=bad", "/api/v1/newsgroups/alt.test/timeline?level=year&start_date=bad"} {
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, httptest.NewRequest(http.MethodGet, path, nil))
+		if res.Code != http.StatusBadRequest {
+			t.Fatalf("%s = %d", path, res.Code)
+		}
+	}
+	bad := httptest.NewRecorder()
+	handler.ServeHTTP(bad, httptest.NewRequest(http.MethodPost, "/api/v1/newsgroups/alt.test/timeline/complete", strings.NewReader(`{"start_date":"bad"}`)))
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("bad completion=%d", bad.Code)
+	}
+	service.completeErr = errors.New("database failure")
+	failure := httptest.NewRecorder()
+	handler.ServeHTTP(failure, httptest.NewRequest(http.MethodPost, "/api/v1/newsgroups/alt.test/timeline/complete", strings.NewReader(`{"start_date":"2020-01-01","end_date":"2020-01-01"}`)))
+	if failure.Code != http.StatusBadRequest || strings.Contains(failure.Body.String(), "database") {
+		t.Fatalf("failure=%d %s", failure.Code, failure.Body.String())
 	}
 }
 
