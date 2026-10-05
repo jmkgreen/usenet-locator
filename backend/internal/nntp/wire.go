@@ -174,6 +174,9 @@ func (c *wireClient) Stat(ctx context.Context, messageID string) (int, error) {
 }
 
 func (c *wireClient) Group(ctx context.Context, name string) (Group, error) {
+	if name == "" || strings.ContainsAny(name, "\r\n") {
+		return Group{}, fmt.Errorf("invalid newsgroup")
+	}
 	code, message, err := c.command(ctx, "GROUP %s", name)
 	if err != nil {
 		return Group{}, err

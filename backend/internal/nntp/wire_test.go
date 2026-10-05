@@ -149,6 +149,54 @@ func TestGroupReadTimesOut(t *testing.T) {
 	}
 }
 
+func TestGroupParsesOnlyWellFormedServerResponses(t *testing.T) {
+	for _, tc := range []struct {
+		name, response string
+		want           Group
+		wantErr        bool
+	}{
+		{name: "success", response: "211 42 10 51 alt.test\r\n", want: Group{Name: "alt.test", Low: 10, High: 51}},
+		{name: "server rejection", response: "411 no such group\r\n", wantErr: true},
+		{name: "missing fields", response: "211 short\r\n", wantErr: true},
+		{name: "invalid bounds", response: "211 42 lower 51 alt.test\r\n", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clientConn, serverConn := net.Pipe()
+			defer clientConn.Close()
+			go func() {
+				defer serverConn.Close()
+				r, w := bufio.NewReader(serverConn), bufio.NewWriter(serverConn)
+				if line, _ := r.ReadString('\n'); line != "GROUP alt.test\r\n" {
+					return
+				}
+				_, _ = w.WriteString(tc.response)
+				_ = w.Flush()
+			}()
+			c := &wireClient{conn: clientConn, text: textproto.NewConn(clientConn), ep: Endpoint{ReadTimeout: time.Second}}
+			group, err := c.Group(context.Background(), "alt.test")
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("Group accepted malformed response")
+				}
+				return
+			}
+			if err != nil || group != tc.want {
+				t.Fatalf("Group = %#v, %v", group, err)
+			}
+		})
+	}
+}
+
+func TestGroupRejectsCommandInjectionBeforeWriting(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	c := &wireClient{conn: clientConn, text: textproto.NewConn(clientConn), ep: Endpoint{ReadTimeout: time.Second}}
+	if _, err := c.Group(context.Background(), "alt.test\r\nAUTHINFO USER attacker"); err == nil {
+		t.Fatal("Group accepted a CRLF-injected newsgroup")
+	}
+}
+
 func TestCapabilitiesAndLegacyReaderMode(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	done := make(chan struct{})
