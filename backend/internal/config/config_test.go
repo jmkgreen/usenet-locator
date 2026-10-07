@@ -58,6 +58,33 @@ func TestValidateAllowsOnlyKnownOverviewCommands(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsAdditionalInvalidLimitsAndIdentifiers(t *testing.T) {
+	limit := int64(0)
+	disabled := false
+	cases := []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{"database connection limit", func(cfg *Config) { cfg.Database.MaxConns = 33 }},
+		{"non-positive resource limit", func(cfg *Config) { cfg.Resources.ActiveJobs = 0 }},
+		{"oversized batch", func(cfg *Config) { cfg.Resources.BatchSize = 1001 }},
+		{"duplicate account", func(cfg *Config) { cfg.Accounts = append(cfg.Accounts, cfg.Accounts[0]) }},
+		{"zero transfer limit", func(cfg *Config) { cfg.Accounts[0].TransferLimitBytes = &limit }},
+		{"invalid endpoint port", func(cfg *Config) { cfg.Endpoints[0].Port = 0 }},
+		{"duplicate endpoint", func(cfg *Config) { cfg.Endpoints = append(cfg.Endpoints, cfg.Endpoints[0]) }},
+		{"disabled primary", func(cfg *Config) { cfg.Endpoints[0].Enabled = &disabled }},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := validConfig()
+			test.mutate(&cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("Validate() succeeded")
+			}
+		})
+	}
+}
+
 func TestReadSecretFileTrimsMountedSecretNewline(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "secret")
 	if err := os.WriteFile(path, []byte("secret-value\n"), 0o600); err != nil {
@@ -66,6 +93,16 @@ func TestReadSecretFileTrimsMountedSecretNewline(t *testing.T) {
 	value, err := ReadSecretFile(path)
 	if err != nil || value != "secret-value" {
 		t.Fatalf("ReadSecretFile() = %q, %v", value, err)
+	}
+}
+
+func TestReadSecretFileRejectsEmptySecret(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(path, []byte(" \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadSecretFile(path); err == nil {
+		t.Fatal("ReadSecretFile() succeeded for empty secret")
 	}
 }
 
