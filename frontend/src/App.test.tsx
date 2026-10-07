@@ -9,7 +9,7 @@ beforeEach(() => {
   document.body.innerHTML = '<div id="root"></div>';
   root = createRoot(document.getElementById("root")!);
 });
-afterEach(() => { act(() => root.unmount()); vi.unstubAllGlobals(); });
+afterEach(() => { act(() => root.unmount()); localStorage.clear(); vi.unstubAllGlobals(); });
 
 function setValue(element: HTMLInputElement, value: string) {
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
@@ -17,7 +17,7 @@ function setValue(element: HTMLInputElement, value: string) {
   element.dispatchEvent(new Event("input", { bubbles: true }));
 }
 async function click(label: string) {
-  const button = [...document.querySelectorAll("button")].find((element) => element.textContent === label) as HTMLButtonElement;
+  const button = [...document.querySelectorAll("button")].find((element) => element.closest("nav") === null && element.textContent === label) as HTMLButtonElement;
   await act(async () => { button.click(); });
 }
 
@@ -25,9 +25,20 @@ test("search form calls the unwanted-filtered API", async () => {
   const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ articles: [], next_cursor: "" }), { status: 200, headers: { "Content-Type": "application/json" } }));
   vi.stubGlobal("fetch", fetchMock);
   await act(async () => { root.render(<App />); });
-  const button = [...document.querySelectorAll("button")].find((element) => element.textContent === "Search") as HTMLButtonElement;
+  const button = [...document.querySelectorAll("button")].find((element) => element.closest("nav") === null && element.textContent === "Search") as HTMLButtonElement;
   await act(async () => { button.click(); });
   expect(fetchMock).toHaveBeenCalledWith("/api/v1/search?subject=&author=&newsgroup=&include_unwanted=false&limit=50", expect.any(Object));
+});
+
+test("navigation isolates provider settings and persists the selected theme", async () => {
+  await act(async () => { root.render(<App />); });
+  const settings = [...document.querySelectorAll("nav + .toolbar button")].find((element) => element.textContent === "Settings") as HTMLButtonElement;
+  await act(async () => { settings.click(); });
+  expect([...document.querySelectorAll("h2")].find((heading) => heading.textContent === "Providers")?.closest("section")?.hidden).toBe(false);
+  const theme = document.querySelector('select[aria-label="Theme"]') as HTMLSelectElement;
+  const selectSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+  await act(async () => { selectSetter?.call(theme, "dark"); theme.dispatchEvent(new Event("change", { bubbles: true })); });
+  expect(localStorage.getItem("usenet-locator.theme")).toBe("dark");
 });
 
 test("job controls, result marks, reader retrieval, and providers use the API", async () => {

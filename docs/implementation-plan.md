@@ -105,3 +105,12 @@ After the application has been used for historical research, implement:
 Potential future work includes a dedicated CLI, richer thread navigation, log-search API/UI, and other features justified by real usage.
 
 These are not Stage 1 acceptance requirements.
+
+## Stage 5 — web console modernization (proposed)
+
+Subject to approval of [`ui-modernization-proposal.md`](ui-modernization-proposal.md),
+modernize the SPA in three safe increments: application shell and theme
+foundation; the Index workspace with truthful per-provider progress; then
+focused Search, Coverage, and Watchlist workflows. Preserve all existing API
+and safety semantics. Do not display percentage-complete provider progress
+until the backend can supply a reliable documented total or estimate.
