@@ -77,6 +77,7 @@ test("job controls, result marks, reader retrieval, and providers use the API", 
   await act(async () => { (document.querySelector('input[aria-label="Select <a@test>"]') as HTMLInputElement).click(); });
   await click("Mark selected unwanted"); await click("Search"); await click("A subject"); await click("Retrieve text"); await click("Show configured endpoints"); await click("Show history"); await click("Show stored groups and coverage"); await click("comp.lang.go"); await click("Find earliest"); await click("Retrieve oldest headers"); await click("Browse chronologically");
   expect(document.body.textContent).toContain("body text");
+  expect(document.querySelector('[aria-label="Article header"]')?.textContent).toContain("Date: Unknown");
   expect(document.body.textContent).toContain("news.example:563");
   expect(document.body.textContent).toContain("Earliest observed: comp.lang.go");
 	expect(document.body.textContent).toContain("Open earliest");
@@ -330,7 +331,7 @@ test("article and coverage views show stored evidence and unknown values", async
   const fetchMock = vi.fn(async (input: string | URL) => {
     const url = String(input);
     if (url.includes("/search?")) return new Response(JSON.stringify({ articles: [{ id: 1, message_id: "<one@test>", subject: "One", author: "A", unwanted: false }], next_cursor: "", total_records: 1, page_size: 50 }), { status: 200 });
-    if (url.endsWith("/articles/1")) return new Response(JSON.stringify({ id: 1, message_id: "<one@test>", subject: "One", author: "A", unwanted: false, references: "<parent@test>", bytes: 123, lines: null, newsgroups: ["alt.test"], cached_body: false }), { status: 200 });
+    if (url.endsWith("/articles/1")) return new Response(JSON.stringify({ id: 1, message_id: "<one@test>", subject: "One", author: "A", date: "2020-01-02T03:04:05Z", unwanted: false, references: "<parent@test>", bytes: 123, lines: null, newsgroups: ["alt.test"], cached_body: false }), { status: 200 });
     if (url.endsWith("/newsgroups")) return new Response(JSON.stringify({ newsgroups: [{ name: "alt.test", articles: 1 }] }), { status: 200 });
     if (url.endsWith("/coverage")) return new Response(JSON.stringify({ coverage: [{ endpoint: "primary", newsgroup: "alt.test", state: "partial", article_number_start: 1, article_number_end: 3, observed_start: "2020-01-01T00:00:00Z", observed_end: null, reason: "incomplete" }] }), { status: 200 });
     return new Response(JSON.stringify({ jobs: [] }), { status: 200 });
@@ -339,6 +340,7 @@ test("article and coverage views show stored evidence and unknown values", async
   await act(async () => { root.render(<App />); });
   await click("Search"); await click("One");
   expect(document.querySelector('[aria-label="Article header"]')?.textContent).toContain("<parent@test>");
+  expect(document.querySelector('[aria-label="Article header"]')?.textContent).toContain("Date: 2020-01-02T03:04:05Z");
   expect(document.querySelector('[aria-label="Article header"]')?.textContent).toContain("Bytes: 123");
   expect(document.querySelector('[aria-label="Article header"]')?.textContent).toContain("Lines: Unknown");
   await click("Show stored groups and coverage");
