@@ -2,6 +2,12 @@
 
 This is the mandatory entry point for implementation agents.
 
+For readers evaluating the product, start with the [feature overview](../README.md),
+then consult [features implemented](features-implemented.md) and
+[features planned](features-planned.md). The status catalogues describe the
+current source and future intent respectively; they do not replace the
+normative requirements or stage-acceptance evidence below.
+
 ## Authority and reading order
 
 1. [`requirements.md`](requirements.md) — authoritative product and non-functional requirements. **MUST/SHALL** requirements take precedence over implementation suggestions elsewhere.

@@ -182,3 +182,166 @@ test("timeline exposes gap completion and read-only chronological navigation", a
   await click("Go to articles");
   expect(document.body.textContent).toContain("Timeline");
 });
+
+test("search preserves submitted message and date filters across pages", async () => {
+  const fetchMock = vi.fn(async (input: string | URL) => {
+    const url = String(input);
+    return new Response(JSON.stringify({ articles: [{ id: 1, message_id: "<one@test>", subject: "One", author: "A", unwanted: false }], next_cursor: url.includes("cursor=") ? "" : "next", total_records: 2, page_size: 50 }), { status: 200 });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  await act(async () => { root.render(<App />); });
+  const form = document.querySelector('form[aria-label="Search headers"]')!;
+  const inputs = form.querySelectorAll("input");
+  await act(async () => { setValue(inputs[3], "<one@test>"); setValue(inputs[4], "2020-01-01"); setValue(inputs[5], "2020-01-31"); });
+  await click("Search");
+  await act(async () => { setValue(inputs[3], "<changed@test>"); });
+  await click("Load more");
+  const lastURL = String(fetchMock.mock.calls.at(-1)?.[0]);
+  const query = new URL(lastURL, "http://localhost").searchParams;
+  expect(query.get("message_id")).toBe("<one@test>");
+  expect(query.get("start_date")).toBe("2020-01-01");
+  expect(query.get("end_date")).toBe("2020-01-31");
+  expect(query.get("cursor")).toBe("next");
+  await act(async () => { setValue(inputs[4], "2021-01-01"); });
+  const calls = fetchMock.mock.calls.length;
+  await click("Search");
+  expect(fetchMock.mock.calls.length).toBe(calls);
+  expect(document.body.textContent).toContain("Start date must be on or before end date");
+});
+
+test("timeline paging retains period and whole-group navigation removes it", async () => {
+  const fetchMock = vi.fn(async (input: string | URL) => {
+    const url = String(input);
+    if (url.includes("/timeline?")) return new Response(JSON.stringify({ periods: [{ level: "year", start_date: "2020-01-01", end_date: "2020-12-31", article_count: 2, state: "gaps", endpoints: [] }] }), { status: 200 });
+    if (url.includes("/headers?")) return new Response(JSON.stringify({ articles: [{ id: 1, subject: "First", author: "A", message_id: "<one@test>", unwanted: false }], next_cursor: url.includes("cursor=") ? "" : "next", total_records: 2, page_size: 50 }), { status: 200 });
+    if (url.includes("/jobs?")) return new Response(JSON.stringify({ jobs: [] }), { status: 200 });
+    return new Response(JSON.stringify({ observations: [] }), { status: 200 });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  await act(async () => { root.render(<App />); });
+  const section = [...document.querySelectorAll("section")].find((item) => item.querySelector("h2")?.textContent === "Timeline coverage")!;
+  await act(async () => { setValue(section.querySelector("input")!, "comp.timeline"); });
+  await click("Browse"); await click("Go to articles"); await click("Newer headers");
+  let query = new URL(String(fetchMock.mock.calls.at(-1)?.[0]), "http://localhost").searchParams;
+  expect(query.get("start_date")).toBe("2020-01-01"); expect(query.get("end_date")).toBe("2020-12-31"); expect(query.get("cursor")).toBe("next");
+  await click("Browse whole group");
+  query = new URL(String(fetchMock.mock.calls.at(-1)?.[0]), "http://localhost").searchParams;
+  expect(query.has("start_date")).toBe(false); expect(query.has("cursor")).toBe(false);
+});
+
+test("provider qualification is explicit and refreshes safe history", async () => {
+  const result = { capabilities: ["READER"], overview_format_code: 215, overview_fields: ["Subject"], stat_code: 223, group_selected: true, group_low: 1, group_high: 10, overview_code: 224, overview_rows: 1, overview_dates: 1 };
+  const fetchMock = vi.fn(async (input: string | URL, options?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/providers")) return new Response(JSON.stringify({ endpoints: [{ id: "primary", enabled: true, host: "news.example", port: 563, tls: true, primary: true, priority: 1, connection_in_use: 0, connection_limit: 1, transfer_used_bytes: 0, transfer_limit_bytes: null }] }), { status: 200 });
+    if (url.endsWith("/preflight") && options?.method === "POST") return new Response(JSON.stringify(result), { status: 200 });
+    if (url.endsWith("/qualifications")) return new Response(JSON.stringify({ qualifications: [] }), { status: 200 });
+    return new Response("{}", { status: 404 });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  await act(async () => { root.render(<App />); });
+  await click("Show configured endpoints"); await click("Show history");
+  expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/preflight"))).toBe(false);
+  const form = document.querySelector('form[aria-label="Provider compatibility check"]')!;
+  const inputs = form.querySelectorAll("input");
+  await act(async () => { setValue(inputs[0], "<one@test>"); setValue(inputs[1], "alt.test"); setValue(inputs[2], "5"); });
+  await click("Run compatibility check");
+  expect(fetchMock).toHaveBeenCalledWith("/api/v1/providers/primary/preflight", expect.objectContaining({ method: "POST", body: JSON.stringify({ message_id: "<one@test>", newsgroup: "alt.test", article_number: 5 }) }));
+  expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/qualifications"))).toHaveLength(2);
+  expect(document.body.textContent).toContain("1–10");
+});
+
+test("queue can pause a running job and use it as the source of a scan", async () => {
+  let state = "running";
+  const job = () => ({ id: "job-1", kind: "index", newsgroup: "comp.test", endpoint: "primary", start_date: "2020-01-01", end_date: "2020-01-31", margin_days: 2, state, headers_retrieved: 2, articles_stored: 1, provider_jobs: [] });
+  const fetchMock = vi.fn(async (input: string | URL, options?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/jobs?limit=50")) return new Response(JSON.stringify({ jobs: [job()] }), { status: 200 });
+    if (url.endsWith("/jobs/job-1/pause") && options?.method === "POST") { state = "paused"; return new Response("{}", { status: 200 }); }
+    if (url.endsWith("/jobs/job-1")) return new Response(JSON.stringify(job()), { status: 200 });
+    return new Response("{}", { status: 404 });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  await act(async () => { root.render(<App />); });
+  await act(async () => { [...document.querySelectorAll<HTMLButtonElement>("nav button")].find((button) => button.textContent === "Coverage")!.click(); });
+  expect(document.querySelector('[aria-label="Job queue"]')?.textContent).toContain("Job ID: job-1");
+  await click("Pause job"); expect(document.body.textContent).toContain("Resume job");
+  await click("Use as source");
+  expect((document.querySelector('input[placeholder="e.g. alt.test"]') as HTMLInputElement).value).toBe("comp.test");
+  expect([...document.querySelectorAll("input")].some((input) => input.value === "job-1")).toBe(true);
+  const form = document.querySelector('form[aria-label="Create indexing job"]') as HTMLFormElement;
+  const budget = [...form.querySelectorAll<HTMLInputElement>('input[type="number"]')].at(-1)!;
+  await act(async () => { setValue(budget, "0"); });
+  expect(form.checkValidity()).toBe(false);
+  await act(async () => { setValue(budget, "100"); });
+  expect(form.checkValidity()).toBe(true);
+});
+
+test("provider errors and disabled endpoints are visible without exposing a check action", async () => {
+  const fetchMock = vi.fn(async (input: string | URL) => {
+    const url = String(input);
+    if (url.endsWith("/providers")) return new Response(JSON.stringify({ endpoints: [{ id: "offline", enabled: false, host: "news.example", port: 563, tls: true, primary: false, priority: 1, connection_in_use: 0, connection_limit: 1, transfer_used_bytes: 0, transfer_limit_bytes: null }] }), { status: 200 });
+    if (url.endsWith("/qualifications")) return new Response(JSON.stringify({ qualifications: [] }), { status: 200 });
+    return new Response(JSON.stringify({ error: "configured provider transfer quota has been reached" }), { status: 429 });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  await act(async () => { root.render(<App />); });
+  await click("Show configured endpoints"); await click("Show history");
+  expect(document.body.textContent).toContain("Disabled");
+  expect(([...document.querySelectorAll("button")].find((item) => item.textContent === "Run compatibility check") as HTMLButtonElement).disabled).toBe(true);
+  expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/preflight"))).toBe(false);
+});
+
+test("qualification quota failures are shown and do not refresh history", async () => {
+  const fetchMock = vi.fn(async (input: string | URL) => {
+    const url = String(input);
+    if (url.endsWith("/providers")) return new Response(JSON.stringify({ endpoints: [{ id: "primary", enabled: true, host: "news.example", port: 563, tls: true, primary: true, priority: 1, connection_in_use: 0, connection_limit: 1, transfer_used_bytes: 0, transfer_limit_bytes: null }] }), { status: 200 });
+    if (url.endsWith("/qualifications")) return new Response(JSON.stringify({ qualifications: [] }), { status: 200 });
+    return new Response(JSON.stringify({ error: "configured provider transfer quota has been reached" }), { status: 429 });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  await act(async () => { root.render(<App />); });
+  await click("Show configured endpoints"); await click("Show history"); await click("Run compatibility check");
+  expect(document.body.textContent).toContain("configured provider transfer quota has been reached");
+  expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/qualifications"))).toHaveLength(1);
+});
+
+test("job lookup and conflicting commands preserve a refreshed state", async () => {
+  let state = "running";
+  const job = () => ({ id: "older", kind: "index", newsgroup: "comp.old", endpoint: "primary", state, headers_retrieved: 0, articles_stored: 0, provider_jobs: [] });
+  const fetchMock = vi.fn(async (input: string | URL) => {
+    const url = String(input);
+    if (url.endsWith("/jobs?limit=50")) return new Response(JSON.stringify({ jobs: [] }), { status: 200 });
+    if (url.endsWith("/jobs/older/pause")) { state = "interrupted"; return new Response(JSON.stringify({ error: "job state changed" }), { status: 409 }); }
+    if (url.endsWith("/jobs/older")) return new Response(JSON.stringify(job()), { status: 200 });
+    return new Response("{}", { status: 404 });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  await act(async () => { root.render(<App />); });
+  await act(async () => { [...document.querySelectorAll<HTMLButtonElement>("nav button")].find((button) => button.textContent === "Coverage")!.click(); });
+  await act(async () => { setValue(document.querySelector('form[aria-label="Find an older job"] input')!, "older"); });
+  await click("Find job"); await click("Pause job");
+  expect(document.body.textContent).toContain("job state changed");
+  expect(document.querySelector('[aria-label="Job queue"]')?.textContent).toContain("interrupted");
+  expect(document.querySelector('[aria-label="Job queue"]')?.textContent).toContain("Resume job");
+});
+
+test("article and coverage views show stored evidence and unknown values", async () => {
+  const fetchMock = vi.fn(async (input: string | URL) => {
+    const url = String(input);
+    if (url.includes("/search?")) return new Response(JSON.stringify({ articles: [{ id: 1, message_id: "<one@test>", subject: "One", author: "A", unwanted: false }], next_cursor: "", total_records: 1, page_size: 50 }), { status: 200 });
+    if (url.endsWith("/articles/1")) return new Response(JSON.stringify({ id: 1, message_id: "<one@test>", subject: "One", author: "A", unwanted: false, references: "<parent@test>", bytes: 123, lines: null, newsgroups: ["alt.test"], cached_body: false }), { status: 200 });
+    if (url.endsWith("/newsgroups")) return new Response(JSON.stringify({ newsgroups: [{ name: "alt.test", articles: 1 }] }), { status: 200 });
+    if (url.endsWith("/coverage")) return new Response(JSON.stringify({ coverage: [{ endpoint: "primary", newsgroup: "alt.test", state: "partial", article_number_start: 1, article_number_end: 3, observed_start: "2020-01-01T00:00:00Z", observed_end: null, reason: "incomplete" }] }), { status: 200 });
+    return new Response(JSON.stringify({ jobs: [] }), { status: 200 });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  await act(async () => { root.render(<App />); });
+  await click("Search"); await click("One");
+  expect(document.querySelector('[aria-label="Article header"]')?.textContent).toContain("<parent@test>");
+  expect(document.querySelector('[aria-label="Article header"]')?.textContent).toContain("Bytes: 123");
+  expect(document.querySelector('[aria-label="Article header"]')?.textContent).toContain("Lines: Unknown");
+  await click("Show stored groups and coverage");
+  expect(document.body.textContent).toContain("2020-01-01T00:00:00Z");
+  expect(document.body.textContent).toContain("incomplete");
+});

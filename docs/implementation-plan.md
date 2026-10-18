@@ -1,5 +1,12 @@
 # Implementation plan
 
+This document records staged requirements, delivery details and proposals; it
+is not a live feature-status checklist. Some work described below has already
+been implemented, while other work remains proposed or awaiting acceptance.
+For a current-source inventory see [features implemented](features-implemented.md);
+for future scope and proposal status see [features planned](features-planned.md).
+The [product overview](../README.md) is the end-user starting point.
+
 ## Stage 0 — technical design
 
 Before main coding, propose and obtain approval for:
@@ -138,6 +145,72 @@ Add the group timeline browser:
   enabled endpoints, while retaining visible endpoint-level gap/pending states;
 - provide gap-only completion and read-only period navigation; and
 - share page-size preference and total-record reporting with every article list.
+
+### Make implemented capabilities usable in the web console
+
+The following increment addresses capabilities already implemented by the
+backend but absent or incomplete in the console. Deliver these as coherent
+user workflows, not just additional fields. Preserve existing provider quota,
+explicit-network-action, privacy, and job-lifecycle semantics.
+
+1. **Search stored headers.** Add an exact Message-ID field and optional
+   inclusive start and end dates alongside the existing filters. Explain that
+   search is local and that the date range uses UTC whole days; validate dates
+   and preserve all filters when loading subsequent pages. Provide clear empty,
+   loading, and invalid-range feedback. Test each filter alone and in
+   combination, inclusive end dates, pagination, and unwanted-article filtering.
+
+2. **Run provider qualification.** In Settings → Providers, offer an explicit
+   compatibility check for a selected endpoint, with optional Message-ID,
+   newsgroup, and article number inputs. Explain that it contacts the provider
+   and consumes quota; do not run it merely by opening Settings or history.
+   Show safe results and actionable errors, and refresh the selected endpoint's
+   history after success. Present only checks that actually ran, distinguish
+   unavailable and failed checks, and never expose credentials or raw provider
+   response text. Test basic and optional probes, validation, quota and provider
+   errors, history refresh, and that viewing history makes no NNTP request.
+
+3. **Manage existing jobs and supplementary scans.** Give each queue entry a
+   selectable detail view with its identifier, operation, requested date range
+   where applicable, scan reason, transfer budget/usage, provider states and
+   errors. Offer pause for running jobs, resume for paused/interrupted jobs,
+   and cancel where the backend permits them; retain discovery retry as a new
+   job and do not present an unsupported retry of a terminal indexing job as a
+   resume. Refresh after commands and handle state changes or conflicts caused
+   by concurrent workers. Let users select a prior job as the source of a
+   supplementary scan and prefill relevant fields, while permitting a manually
+   entered ID where appropriate; explain the optional transfer budget. Make
+   the existing recent-job limit explicit, and provide a path to an older job
+   by ID or extend the API for paginated history if a full history is needed.
+   Test navigation and controls after reload, state transitions and conflicts,
+   source selection, budget validation, and mixed indexing/discovery jobs.
+
+4. **Show evidence and provider status.** Display article references, byte and
+   line counts when known, and coverage observed date bounds and reason when
+   supplied; label absent values as unknown rather than inferring completeness.
+   Display each endpoint's enabled/disabled state and explain that disabled
+   endpoints retain historical evidence but receive no new work. Keep provider
+   credentials out of the UI. Test known and missing values, partial/failed
+   coverage, and disabled endpoints.
+
+5. **Keep timeline browsing within the selected period.** Retain the group,
+   inclusive date bounds, and page size for every chronological page after
+   **Go to articles**; show the selected period and offer an explicit way to
+   return to the whole-group view. Reset cursors when the group or period
+   changes, and ensure navigation remains local and never triggers NNTP work.
+   Test multiple pages, period boundaries, switching groups and periods, empty
+   periods, and returning to unrestricted chronological browsing.
+
+For all five workflows, use labelled keyboard-accessible controls, visible
+focus, meaningful loading/empty/error states, responsive layouts, and
+non-colour-only status. Update the user guide and API documentation if the API
+changes. Run affected frontend and backend tests, TypeScript/build checks, and
+the project's coverage gates; include regression tests for existing search,
+job, retention, and provider workflows. Verify the resulting interaction in
+the browser at desktop and narrow widths. Provider and resource configuration
+remain file-based unless a separately designed management API is approved;
+health/metrics endpoints and the legacy synchronous retention probe are not
+required to gain routine end-user controls in this increment.
 
 Implement MCP after REST/web are established. Reuse existing application services. Define read vs state-changing MCP operations and access controls before exposing them.
 

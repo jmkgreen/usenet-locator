@@ -1,15 +1,21 @@
 # User guide
 
-Create an indexing job by choosing a configured endpoint, one newsgroup, an
-inclusive start/end date, and a date margin. A queued job is claimed by the
+Create an indexing job by choosing one newsgroup, an inclusive start/end date,
+and a date margin. It fans out to the enabled provider endpoints. A queued job is claimed by the
 bounded dispatcher; a running job can be paused or cancelled. After a process
 restart or NNTP failure, a job becomes `interrupted` and must be resumed
 explicitly. This is intentional: the application never silently restarts work.
 
-Search operates on local headers. It filters unwanted articles by default;
+Search operates on local headers. Search by subject, author, newsgroup, exact
+Message-ID, and/or inclusive UTC start and end dates. A result page continues
+the filters submitted with the search even if the form is edited before loading
+more; submit again to apply changes. Search filters unwanted articles by default;
 select **Include unwanted** to inspect them. Select one or more results to mark
 them unwanted or clear that mark. The mark is local, permanent until cleared,
 and applies to the same Message-ID wherever it is known.
+
+Article details include available references, byte and line counts, and group
+memberships; unknown metadata is labelled rather than guessed.
 
 Opening an article first shows stored headers, group memberships, and cache
 state without contacting NNTP. **Retrieve text** is explicit. It reuses cached
@@ -33,6 +39,12 @@ been indexed before. The **Job queue** shows recent discovery and indexing
 jobs, their provider states and results, and available controls. It refreshes
 every five seconds while Coverage is open. Select **Show group results** to
 inspect saved observations and retrieve additional oldest headers.
+Queue entries show the job ID, range, scan reason, transfer usage, and provider
+status. Pause a running job, resume a paused or interrupted one, or cancel it
+where the lifecycle permits. To find a job outside the recent list, enter its ID
+under **Find job by ID**. For an indexing job, **Use as source** opens a
+supplementary scan with its group, dates, margin, and source ID prefilled;
+choose the appropriate reason and, optionally, a transfer budget before queuing.
 
 Each discovery examines at most 1,000 article numbers from the provider's
 reported low bound. The result is the earliest usable header observed in that
@@ -45,7 +57,10 @@ days. A unit is complete only after every enabled endpoint has successfully
 covered it; a gap or pending clue identifies incomplete or active work. Select
 **Complete coverage** to queue only outstanding endpoint work. **Go to
 articles** opens the locally stored headers from the start of that period in
-chronological order and never starts NNTP work. The records-per-page selection
+chronological order and never starts NNTP work. Subsequent pages remain within
+the selected inclusive UTC period; **Browse whole group** clears that filter.
+Coverage rows show available observed date bounds and reasons as well as the
+endpoint-specific article range. The records-per-page selection
 is saved in this browser and applies to article lists.
 
 Use the **Retention watchlist** for groups whose retention should be checked
@@ -56,4 +71,10 @@ current provider group bounds. Failed checks remain due for a later retry.
 Adding, changing, or removing an entry does not contact a provider.
 
 The provider view shows configured endpoints along with active/allowed account
-connections and transfer usage. It never exposes provider credentials.
+connections, transfer usage, and enabled status. Disabled endpoints keep their
+historical evidence but receive no new work. **Show history** selects an
+endpoint and displays its qualification history without contacting the provider.
+To perform a new compatibility check, optionally supply a Message-ID, group,
+and article number, then explicitly select **Run compatibility check**. This
+contacts the provider and consumes quota; successful checks refresh history.
+The provider view never exposes credentials or raw provider responses.
