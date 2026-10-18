@@ -55,7 +55,8 @@ func TestOverviewFallsBackAndStreamsValidRecords(t *testing.T) {
 
 func TestHeadFetchesOnlyBoundedHeaders(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done); _ = clientConn.Close() })
 	go func() {
 		defer serverConn.Close()
 		r, w := bufio.NewReader(serverConn), bufio.NewWriter(serverConn)
@@ -64,6 +65,7 @@ func TestHeadFetchesOnlyBoundedHeaders(t *testing.T) {
 		}
 		_, _ = w.WriteString("221 header follows\r\nContent-Type: text/plain\r\nX-Test: yes\r\n.\r\n")
 		_ = w.Flush()
+		<-done
 	}()
 	c := &wireClient{conn: clientConn, text: textproto.NewConn(clientConn), ep: Endpoint{ReadTimeout: time.Second}}
 	var headers bytes.Buffer
