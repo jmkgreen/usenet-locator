@@ -16,6 +16,8 @@ This is the mandatory entry point for implementation agents.
 10. [`deployment.md`](deployment.md), [`user-guide.md`](user-guide.md), and [`developer.md`](developer.md) — operational, user, and contributor guidance.
 11. [`stage-2-proposal.md`](stage-2-proposal.md) — approved-direction proposal for provider expansion and MCP.
 12. [`ui-modernization-proposal.md`](ui-modernization-proposal.md) — proposed web-console information architecture, theming, provider-progress rules, and delivery plan.
+13. [`archive-quality-proposal.md`](archive-quality-proposal.md) — proposed normalization, cleanup, threading, rendering, verification, import, and export capabilities.
+14. [`provider-deletion-observability-proposal.md`](provider-deletion-observability-proposal.md) — proposed provider-availability history and deleted-content research workspace.
 
 The repository-level [`../README.md`](../README.md) is orientation only. If it conflicts with a detailed document, the detailed document governs; if two detailed documents conflict, `requirements.md` governs unless it explicitly delegates the decision.
 

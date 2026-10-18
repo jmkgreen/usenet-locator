@@ -26,6 +26,33 @@ not exposed on a public interface.
 The application applies its embedded migrations at startup. Back up the
 PostgreSQL volume before upgrades and verify `/readyz` after deployment.
 
+## Reverse-proxy path prefixes
+
+The web console can be mounted below a path prefix, provided the proxy strips
+that prefix before forwarding the request to the container. The frontend build
+uses relative asset and API URLs, so the public URL should include a trailing
+slash, for example `https://example.com/usenet-locator/`.
+
+For Traefik, the relevant labels are equivalent to:
+
+```yaml
+labels:
+  - traefik.enable=true
+  - traefik.http.routers.usenet-locator.rule=Host(`example.com`) && PathPrefix(`/usenet-locator`)
+  - traefik.http.routers.usenet-locator.entrypoints=websecure
+  - traefik.http.routers.usenet-locator.tls=true
+  - traefik.http.routers.usenet-locator.middlewares=usenet-locator-strip
+  - traefik.http.middlewares.usenet-locator-strip.stripprefix.prefixes=/usenet-locator
+  - traefik.http.services.usenet-locator.loadbalancer.server.port=8080
+```
+
+This makes `/usenet-locator/api/v1/...` arrive at the application as
+`/api/v1/...`, while `/usenet-locator/` arrives as `/`. Configure an explicit
+redirect from `/usenet-locator` to `/usenet-locator/` if your proxy does not
+already add the trailing slash; it is needed for relative browser URLs to
+resolve correctly. Health checks should target the stripped container route
+`/readyz`.
+
 ## Shared PostgreSQL
 
 For an external PostgreSQL instance, omit the Compose `db` service and mount a

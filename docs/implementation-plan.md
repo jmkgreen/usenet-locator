@@ -100,13 +100,32 @@ After the application has been used for historical research, implement:
 - SABnzbd HTTP API submission;
 - associated tests and UI.
 
-## Stage 4 — optional enhancements
+## Stage 4 — archive quality and interoperability (proposed)
 
-Potential future work includes a dedicated CLI, richer thread navigation, log-search API/UI, and other features justified by real usage.
+Subject to approval of [`archive-quality-proposal.md`](archive-quality-proposal.md),
+add versioned normalization and quality flags, verification reports, safe
+article rendering, standard import/export, and high-confidence thread
+navigation. Preserve source values and provenance; make cleanup reversible and
+do not silently delete malformed, unwanted, or duplicate content.
+
+## Stage 5 — provider deletion observability (proposed)
+
+Subject to approval of
+[`provider-deletion-observability-proposal.md`](provider-deletion-observability-proposal.md),
+record endpoint-specific availability history, distinguish confirmed provider
+deletion from transient failure, and provide a chronological/searchable
+Deleted content workspace. Provider observations must never delete canonical
+articles, locations, cached bodies, or coverage evidence.
+
+## Stage 7 — optional enhancements
+
+Potential future work includes a dedicated CLI, quote-based thread inference,
+log-search API/UI, optional full-text body search, and other features justified
+by real usage.
 
 These are not Stage 1 acceptance requirements.
 
-## Stage 5 — web console modernization (proposed)
+## Stage 6 — web console modernization (proposed)
 
 Subject to approval of [`ui-modernization-proposal.md`](ui-modernization-proposal.md),
 modernize the SPA in three safe increments: application shell and theme
