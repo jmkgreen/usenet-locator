@@ -42,10 +42,11 @@ acceptance remain subject to the project's stage process.
 
 ### Archive quality, reading, and interoperability
 
-The [archive quality proposal](archive-quality-proposal.md) covers reversible
-normalization and quality flags, verification, safer article rendering,
-thread navigation, and standard import/export. These are proposals, not claims
-of current availability. Access to individual attachments in MIME/multipart
+The [archive quality proposal](archive-quality-proposal.md) describes further
+verification and maintenance, thread navigation, and standard import/export.
+Initial normalization, verification reports, and reader protections are
+described in [features implemented](features-implemented.md#search-and-read).
+Access to individual attachments in MIME/multipart
 articles is a [product requirement](requirements.md#7-text-article-retrieval)
 but is not listed as an implemented UI workflow.
 

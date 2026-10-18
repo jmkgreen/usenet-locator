@@ -11,6 +11,12 @@ import (
 
 type State string
 
+// TransferChecker prevents starting the next bounded provider request once a
+// job's transfer allowance has been exhausted.
+type TransferChecker interface {
+	CheckTransfer(context.Context, string) error
+}
+
 const (
 	Queued      State = "queued"
 	Running     State = "running"

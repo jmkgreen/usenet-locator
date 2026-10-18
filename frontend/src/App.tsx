@@ -7,7 +7,16 @@ type ProviderJob = { endpoint: string; state: JobState; headers_retrieved: numbe
 type Job = { id: string; kind?: string; newsgroup: string; endpoint: string; start_date?: string; end_date?: string; margin_days?: number; state: JobState; headers_retrieved: number; articles_stored: number; scan_reason?: string; source_job_id?: string | null; transfer_limit_bytes?: number | null; transfer_used_bytes?: number; last_error?: string | null; provider_jobs?: ProviderJob[]; created_at?: string; started_at?: string | null; completed_at?: string | null };
 type Article = { id: number; message_id: string; subject: string; author: string; date?: string | null; unwanted: boolean };
 type SearchPage = { articles: Article[]; next_cursor: string; total_records: number; page_size: number };
-type ArticleDetail = Article & { references: string; bytes?: number | null; lines?: number | null; newsgroups: string[]; cached_body: boolean };
+type ArticleDetail = Article & { references: string; bytes?: number | null; lines?: number | null; newsgroups: string[]; cached_body: boolean; quality_flags?: string[] | null; normalizer_version?: number | null; normalized_subject?: string; source_endpoint?: string; source_newsgroup?: string; source_article_number?: number | null; source_overview?: Record<string, string> | null };
+type VerificationReport = { category: string; findings: { key: string; description: string }[]; next_cursor?: string };
+type QuarantinedOverview = { endpoint: string; newsgroup: string; article_number: number; reason: string; source_overview: Record<string, string> };
+type Reader = { text: string; html?: string; raw_headers?: string; parts?: { content_type: string; filename?: string; disposition?: string }[]; flags?: string[]; normalizer_version?: number };
+const verificationCategories: Record<string, string> = {
+  possible_identity_conflicts: "Possible identity conflicts", invalid_identities: "Invalid Message-IDs", repeated_bodies: "Repeated cached text",
+  membership_inconsistencies: "Membership inconsistencies", location_conflicts: "Provider location conflicts", orphaned_locations: "Orphaned locations",
+  orphaned_bodies: "Orphaned cached bodies", locations_without_coverage: "Locations without scan coverage", coverage_without_locations: "Coverage without stored locations",
+  suspicious_dates: "Suspicious dates", body_warnings: "Body decoding warnings", job_counters: "Interrupted jobs and counters",
+};
 type Endpoint = { id: string; account_id: string; host: string; port: number; tls: boolean; primary: boolean; enabled: boolean; priority: number; connection_in_use: number; connection_limit: number; transfer_used_bytes: number; transfer_limit_bytes: number | null };
 type GroupCount = { name: string; articles: number };
 type RetentionObservation = { endpoint: string; newsgroup: string; group_low: number; group_high: number; article_number?: number; article_id?: number; observed_date?: string; outcome: string; observed_at: string; next_article_number?: number; cursor_high?: number };
@@ -26,6 +35,23 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
+function overviewValue(value: string): string {
+  try { return new TextDecoder().decode(Uint8Array.from(atob(value), (character) => character.charCodeAt(0))); }
+  catch { return "Unable to display source bytes"; }
+}
+
+function ReadingText({ text }: { text: string }) {
+  const sections: { kind: string; lines: string[] }[] = [];
+  let signature = false;
+  for (const line of text.split("\n")) {
+    if (line === "-- " || line === "--") signature = true;
+    const kind = signature ? "Signature" : /^\s*>/.test(line) ? "Quoted text" : "Text";
+    const last = sections.at(-1);
+    if (last?.kind === kind) last.lines.push(line); else sections.push({ kind, lines: [line] });
+  }
+  return <>{sections.map((section, index) => section.kind === "Text" ? <pre key={index}>{section.lines.join("\n")}</pre> : <details key={index}><summary>{section.kind}</summary><pre>{section.lines.join("\n")}</pre></details>)}</>;
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -68,6 +94,10 @@ export function App() {
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [detail, setDetail] = useState<ArticleDetail | null>(null);
   const [bodyText, setBodyText] = useState("");
+  const [reader, setReader] = useState<Reader | null>(null);
+  const [verificationCategory, setVerificationCategory] = useState("membership_inconsistencies");
+  const [verificationReport, setVerificationReport] = useState<VerificationReport | null>(null);
+  const [quarantined, setQuarantined] = useState<QuarantinedOverview | null>(null);
   const [endpoints, setEndpoints] = useState<Endpoint[]>([]);
   const [groups, setGroups] = useState<GroupCount[]>([]);
   const [coverage, setCoverage] = useState<Coverage[]>([]);
@@ -192,7 +222,7 @@ export function App() {
 
   async function loadDetail(id: number) {
     setBusy(true); setError("");
-    try { setDetail(await request<ArticleDetail>(`/articles/${id}`)); setBodyText(""); setActiveView("search"); }
+    try { setDetail(await request<ArticleDetail>(`/articles/${id}`)); setBodyText(""); setReader(null); setActiveView("search"); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "Could not load article detail"); }
     finally { setBusy(false); }
   }
@@ -200,8 +230,36 @@ export function App() {
   async function retrieveBody() {
     if (!detail) return;
     setBusy(true); setError("");
-    try { const response = await request<{ text: string }>(`/articles/${detail.id}/body`, { method: "POST" }); setBodyText(response.text); }
+    try { const response = await request<{ text: string }>(`/articles/${detail.id}/body`, { method: "POST" }); setBodyText(response.text); setReader(await request<Reader>(`/articles/${detail.id}/reader`)); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "Could not retrieve article text"); }
+    finally { setBusy(false); }
+  }
+
+  async function reprocessArticle() {
+    if (!detail) return;
+    setBusy(true); setError("");
+    try {
+      await request(`/articles/${detail.id}/reprocess`, { method: "POST" });
+      setDetail(await request<ArticleDetail>(`/articles/${detail.id}`));
+      if (reader) { const updated = await request<Reader>(`/articles/${detail.id}/reader`); setReader(updated); setBodyText(updated.text); }
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not reprocess article"); }
+    finally { setBusy(false); }
+  }
+
+  async function verifyArchive(after = "") {
+    setBusy(true); setError("");
+    try {
+      const query = new URLSearchParams({ category: verificationCategory, limit: "50", ...(after ? { after } : {}) });
+      const report = await request<VerificationReport>(`/archive/verification?${query}`);
+      setVerificationReport(report); setQuarantined(null);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not verify archive"); }
+    finally { setBusy(false); }
+  }
+
+  async function inspectQuarantined(id: string) {
+    setBusy(true); setError("");
+    try { setQuarantined(await request<QuarantinedOverview>(`/archive/quarantined/${encodeURIComponent(id)}`)); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Could not inspect overview"); }
     finally { setBusy(false); }
   }
 
@@ -366,7 +424,7 @@ export function App() {
     <section className="view" hidden={activeView !== "search"}><div className="view-heading"><p className="eyebrow">Local archive</p><h2>Search stored headers</h2><p>Search locally stored headers. Dates are inclusive UTC days.</p></div>{error && activeView === "search" && <p className="alert" role="alert">{error}</p>}<form className="card form-grid" onSubmit={(event) => { event.preventDefault(); void search(); }} aria-label="Search headers"><label>Subject <input value={searchSubject} onChange={(event) => setSearchSubject(event.target.value)} /></label>{" "}<label>Author <input value={searchAuthor} onChange={(event) => setSearchAuthor(event.target.value)} /></label>{" "}<label>Newsgroup <input value={searchGroup} onChange={(event) => setSearchGroup(event.target.value)} /></label>{" "}<label>Exact Message-ID <input value={searchMessageID} onChange={(event) => setSearchMessageID(event.target.value)} /></label>{" "}<label>From date <input type="date" value={searchStart} onChange={(event) => setSearchStart(event.target.value)} /></label>{" "}<label>Through date <input type="date" value={searchEnd} onChange={(event) => setSearchEnd(event.target.value)} /></label>{" "}<label><input type="checkbox" checked={includeUnwanted} onChange={(event) => setIncludeUnwanted(event.target.checked)} /> Include unwanted</label>{" "}<label>Records per page <select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}>{[10,25,50,100].map((value) => <option key={value} value={value}>{value}</option>)}</select></label>{" "}<button disabled={busy} type="submit">Search</button></form>{busy && activeView === "search" && <p role="status">Loading…</p>}{searchPerformed && articles.length === 0 && !busy && <p>No stored headers match this search.</p>}
       {articles.length > 0 && <><p>{articles.length} shown of {searchTotal} total</p><p><button disabled={busy || selected.size === 0} onClick={() => void markSelected(true)}>Mark selected unwanted</button>{" "}<button disabled={busy || selected.size === 0} onClick={() => void markSelected(false)}>Clear unwanted mark</button></p><table><thead><tr><th>Select</th><th>Subject</th><th>Author</th><th>Date</th><th>Message-ID</th><th>Unwanted</th></tr></thead><tbody>{articles.map((article) => <tr key={article.id}><td><input aria-label={`Select ${article.message_id}`} type="checkbox" checked={selected.has(article.id)} onChange={() => toggleSelected(article.id)} /></td><td><button onClick={(event) => { detailReturnFocus.current = event.currentTarget; void loadDetail(article.id); }}>{article.subject || "(no subject)"}</button></td><td>{article.author}</td><td>{article.date ?? "Unknown"}</td><td>{article.message_id}</td><td>{article.unwanted ? "Yes" : "No"}</td></tr>)}</tbody></table></>}
       {nextCursor && <button disabled={busy} onClick={() => void search(nextCursor)}>Load more</button>}
-      {detail && <aside className="card article-panel" role="dialog" aria-modal="false" aria-label="Article header"><div className="panel-title"><h2>Article header</h2><button className="close" onClick={() => { setDetail(null); setBodyText(""); detailReturnFocus.current?.focus(); }}>Close</button></div><p><strong>{detail.subject || "(no subject)"}</strong><br />From: {detail.author || "Unknown"}<br />Date: {detail.date || "Unknown"}<br />Message-ID: {detail.message_id}<br />Newsgroups: {detail.newsgroups.join(", ") || "Unknown"}<br />References: {detail.references || "Unknown"}<br />Bytes: {detail.bytes ?? "Unknown"}<br />Lines: {detail.lines ?? "Unknown"}<br />Body cache: {detail.cached_body ? "available" : "not retrieved"}</p>{detail.unwanted ? <p>This article is locally marked unwanted. Clear its unwanted mark before requesting any new body text.</p> : <button disabled={busy} onClick={() => void retrieveBody()}>{detail.cached_body ? "Open cached text" : "Retrieve text"}</button>}{bodyText && <><pre>{bodyText}</pre><a href={`${api}/articles/${detail.id}/body/download`}>Download text (.txt)</a></>}</aside>}
+      {detail && <aside className="card article-panel" role="dialog" aria-modal="false" aria-label="Article header"><div className="panel-title"><h2>Article header</h2><button className="close" onClick={() => { setDetail(null); setBodyText(""); setReader(null); detailReturnFocus.current?.focus(); }}>Close</button></div><p><strong>{detail.subject || "(no subject)"}</strong><br />From: {detail.author || "Unknown"}<br />Date: {detail.date || "Unknown"}<br />Message-ID: {detail.message_id}<br />Newsgroups: {detail.newsgroups.join(", ") || "Unknown"}<br />References: {detail.references || "Unknown"}<br />Bytes: {detail.bytes ?? "Unknown"}<br />Lines: {detail.lines ?? "Unknown"}<br />Body cache: {detail.cached_body ? "available" : "not retrieved"}</p><details><summary>Header evidence and quality</summary><p>Normalizer: {detail.normalizer_version ?? "not recorded"}<br />Quality warnings: {detail.quality_flags?.join(", ") || "None recorded"}<br />Normalized subject: {detail.normalized_subject || "Unknown"}<br />Source: {detail.source_endpoint || "Unknown"}{detail.source_newsgroup && ` / ${detail.source_newsgroup}`}{detail.source_article_number != null && ` / ${detail.source_article_number}`}</p>{detail.source_overview ? <>{Object.entries(detail.source_overview).map(([field, value]) => <p key={field}><strong>{field}:</strong> {overviewValue(value)}</p>)}<button disabled={busy} onClick={() => void reprocessArticle()}>Reprocess stored source</button></> : <p>Original overview was not recorded for this article.</p>}</details>{detail.unwanted ? <p>This article is locally marked unwanted. Clear its unwanted mark before requesting any new body text.</p> : <button disabled={busy} onClick={() => void retrieveBody()}>{detail.cached_body ? "Open cached text" : "Retrieve text"}</button>}{reader && <><h3>Reading view</h3>{bodyText && <ReadingText text={bodyText} />}{reader.html && <details open={!bodyText}><summary>Sanitized HTML</summary><div dangerouslySetInnerHTML={{ __html: reader.html }} /></details>}<p><button onClick={() => void navigator.clipboard.writeText(bodyText || reader.html || "").catch(() => setError("Could not copy article."))}>Copy {bodyText ? "text" : "HTML"}</button>{" "}{bodyText && <a href={`${api}/articles/${detail.id}/body/download`}>Download text (.txt)</a>}{reader.html && <> {" "}<a href={`${api}/articles/${detail.id}/reader/html/download`}>Download sanitized HTML</a></>}</p><details><summary>Body evidence and MIME parts</summary><p>Body warnings: {reader.flags?.join(", ") || "None recorded"}<br />Normalizer: {reader.normalizer_version || "not recorded"}</p>{reader.parts?.map((part, index) => <p key={index}>{part.content_type}{part.disposition && ` · ${part.disposition}`}{part.filename && ` · ${part.filename}`}</p>)}<h4>Raw headers</h4><pre>{reader.raw_headers || "Not available"}</pre></details></>}</aside>}
     </section>
     <section className="view" hidden={activeView !== "watchlist"}><div className="view-heading"><p className="eyebrow">Scheduled checks</p><h2>Retention watchlist</h2><p>Regular bounded checks record each provider’s earliest retained header and current group bounds.</p></div>{error && activeView === "watchlist" && <p className="alert" role="alert">{error}</p>}<form className="card form-grid" onSubmit={saveWatchlist} aria-label="Add watchlist group"><label>Newsgroup <input required placeholder="e.g. alt.test" value={watchlistGroup} onChange={(event) => setWatchlistGroup(event.target.value)} /></label>{" "}<label>Check every <input required type="number" min="1" max="168" value={watchlistInterval} onChange={(event) => setWatchlistInterval(Number(event.target.value))} /> hours</label>{" "}<button disabled={busy} type="submit">Add to watchlist</button>{" "}<button disabled={busy} type="button" onClick={() => void loadWatchlist()}>Show watchlist</button></form>{watchlist.length > 0 && <table><thead><tr><th>Newsgroup</th><th>Interval</th><th>Last checked</th><th>Next check</th><th></th></tr></thead><tbody>{watchlist.map((item) => <tr key={item.newsgroup}><td><button disabled={busy} onClick={() => void loadRetention(item.newsgroup)}>{item.newsgroup}</button></td><td>{item.interval_hours}h</td><td>{item.last_checked_at ? new Date(item.last_checked_at).toLocaleString() : "Not yet"}</td><td>{new Date(item.next_check_at).toLocaleString()}</td><td><button disabled={busy} onClick={() => void removeWatchlist(item.newsgroup)}>Remove</button></td></tr>)}</tbody></table>}</section>
     <section className="view" hidden={activeView !== "settings"}>
@@ -409,6 +467,7 @@ export function App() {
       </section>
     </section>
     <section className="view" hidden={activeView !== "coverage"}><h2>Storage and coverage</h2><button disabled={busy} onClick={() => void loadStorage()}>Show stored groups and coverage</button>{groups.length > 0 && <table><caption>Stored groups</caption><thead><tr><th>Newsgroup</th><th>Articles</th><th>Retained history</th></tr></thead><tbody>{groups.map((group) => <tr key={group.name}><td><button disabled={busy} onClick={() => void loadRetention(group.name)}>{group.name}</button></td><td>{group.articles}</td><td><button disabled={busy} onClick={() => void probeRetention(group.name)}>Find earliest</button></td></tr>)}</tbody></table>}{retentionGroup && <section className="card" id="retention-results"><h3>Earliest observed: {retentionGroup}</h3>{retention.length === 0 && <p>No provider observations yet. Discovery may still be queued or running.</p>}{retention.map((item) => <div className="provider-row" key={item.endpoint}><div><strong>{item.endpoint}</strong><span>{item.outcome.replaceAll("_", " ")}</span></div><small>Checked {new Date(item.observed_at).toLocaleString()}{item.group_low > 0 && ` · group bounds ${item.group_low}–${item.group_high}`}{item.article_number != null && ` · article ${item.article_number}`} · {item.observed_date ? new Date(item.observed_date).toLocaleString() : "Date unknown"}</small><small>{item.next_article_number == null || item.cursor_high == null ? "No retrieval cursor: discovery was incomplete or found no usable header." : item.next_article_number > item.cursor_high ? "Provider cursor exhausted at the last observed group bound." : "More provider history remains beyond the stored headers."}</small>{item.article_id && <button disabled={busy} onClick={() => void loadDetail(item.article_id!)}>Open earliest</button>}</div>)}<p>These bounded observations do not establish the beginning of Usenet history.</p><p><label>Headers per provider <input type="number" min="1" max="100" value={oldestHeaderCount} onChange={(event) => setOldestHeaderCount(Number(event.target.value))} /></label><button disabled={busy || oldestHeaderCount < 1 || oldestHeaderCount > 100} onClick={() => void retrieveOldestHeaders()}>Retrieve oldest headers</button>{" "}<button disabled={busy} onClick={() => void loadChronological("", null)}>Browse chronologically</button></p><h3>Articles: {retentionGroup} ({chronological.total_records} total)</h3>{chronologicalPeriod && <p>Period: {chronologicalPeriod.start}–{chronologicalPeriod.end} (UTC) <button disabled={busy} onClick={() => void loadChronological("", null)}>Browse whole group</button></p>}{chronologicalPeriod && chronological.articles.length === 0 && <p>No stored headers in this period.</p>}{chronological.articles.length > 0 && <><table><caption>Merged stored headers, oldest first</caption><thead><tr><th>Subject</th><th>Date</th></tr></thead><tbody>{chronological.articles.map((article) => <tr key={article.id}><td><button disabled={busy} onClick={() => void loadDetail(article.id)}>{article.subject || "(no subject)"}</button></td><td>{article.date ?? "Unknown"}</td></tr>)}</tbody></table>{chronological.next_cursor && <button disabled={busy} onClick={() => void loadChronological(chronological.next_cursor)}>Newer headers</button>}</>}</section>}{coverage.length > 0 && <table><thead><tr><th>Newsgroup</th><th>Endpoint</th><th>Article range</th><th>State</th><th>Observed dates</th><th>Reason</th></tr></thead><tbody>{coverage.map((item) => <tr key={`${item.newsgroup}-${item.endpoint}-${item.article_number_start}`}><td>{item.newsgroup}</td><td>{item.endpoint}</td><td>{item.article_number_start}–{item.article_number_end}</td><td>{item.state}</td><td>{item.observed_start ?? "Unknown"} – {item.observed_end ?? "Unknown"}</td><td>{item.reason || "Unknown"}</td></tr>)}</tbody></table>}</section>
+    <section className="view" hidden={activeView !== "coverage"}><div className="view-heading"><h2>Archive verification</h2><p>Review possible issues in stored data. These checks do not change the archive or contact providers.</p></div><div className="card"><label>Check <select value={verificationCategory} onChange={(event) => { setVerificationCategory(event.target.value); setVerificationReport(null); setQuarantined(null); }}>{Object.entries(verificationCategories).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>{" "}<button disabled={busy} onClick={() => void verifyArchive()}>Run verification</button>{verificationReport && <><p>{verificationReport.findings.length ? `${verificationReport.findings.length} findings on this page` : "No findings on this page."}</p><ul>{verificationReport.findings.map((finding) => <li key={finding.key}>{finding.description} (record {finding.key}) {verificationReport.category === "invalid_identities" && <button disabled={busy} onClick={() => void inspectQuarantined(finding.key)}>Inspect overview</button>}</li>)}</ul>{verificationReport.next_cursor && <button disabled={busy} onClick={() => void verifyArchive(verificationReport.next_cursor)}>Next findings</button>}</>}{quarantined && <details open><summary>Retained overview evidence</summary><p>{quarantined.endpoint} / {quarantined.newsgroup} / {quarantined.article_number} · {quarantined.reason}</p>{Object.entries(quarantined.source_overview).map(([field, value]) => <p key={field}><strong>{field}:</strong> {overviewValue(value)}</p>)}</details>}</div></section>
     <section className="view" hidden={activeView !== "coverage"}><div className="view-heading"><h2>Timeline coverage</h2></div><form className="card form-grid" onSubmit={(event) => { event.preventDefault(); void loadTimeline(); }}><label>Newsgroup <input required value={timelineGroup} onChange={(event) => setTimelineGroup(event.target.value)} /></label>{" "}<label>Level <select value={timelineLevel} onChange={(event) => setTimelineLevel(event.target.value as "year" | "month" | "day")}><option value="year">Years</option><option value="month">Months</option><option value="day">Days</option></select></label>{" "}<label>Parent/date jump <input type="date" value={timelineStart} onChange={(event) => setTimelineStart(event.target.value)} /></label>{" "}<button disabled={busy}>Browse</button></form>{periods.length > 0 && <table><thead><tr><th>Period</th><th>Articles</th><th>Coverage</th><th>Actions</th></tr></thead><tbody>{periods.map((period) => <tr key={`${period.level}-${period.start_date}`}><td>{period.start_date}–{period.end_date}</td><td>{period.article_count}</td><td title={period.endpoints.map((endpoint) => `${endpoint.endpoint}: ${endpoint.state}`).join(", ")}>{period.state}</td><td>{period.level !== "day" && <><button disabled={busy} onClick={() => void loadTimeline(timelineGroup, period.level === "year" ? "month" : "day", period.start_date)}>Zoom</button>{" "}</>}<button disabled={busy || period.state === "complete" || period.state === "pending"} onClick={() => void completePeriod(period)}>Complete coverage</button>{" "}<button disabled={busy} onClick={() => void goToPeriod(period)}>Go to articles</button></td></tr>)}</tbody></table>}</section>
     </div>
   </main>;

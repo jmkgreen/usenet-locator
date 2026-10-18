@@ -378,6 +378,18 @@ func (s Store) ConsumeTransfer(ctx context.Context, id string, bytes int64) erro
 	return nil
 }
 
+func (s Store) CheckTransfer(ctx context.Context, id string) error {
+	var used int64
+	var limit *int64
+	if err := s.pool.QueryRow(ctx, `SELECT transfer_used_bytes, transfer_limit_bytes FROM index_jobs WHERE id=$1`, id).Scan(&used, &limit); err != nil {
+		return fmt.Errorf("check job transfer: %w", err)
+	}
+	if limit != nil && used >= *limit {
+		return ErrTransferLimitExceeded
+	}
+	return nil
+}
+
 // Interrupt records a safe, manually resumable stop. It only changes a
 // running job, so a concurrent pause/cancel command is never overwritten.
 func (s Store) Interrupt(ctx context.Context, id, reason string) error {

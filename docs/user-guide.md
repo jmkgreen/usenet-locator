@@ -5,6 +5,10 @@ and a date margin. It fans out to the enabled provider endpoints. A queued job i
 bounded dispatcher; a running job can be paused or cancelled. After a process
 restart or NNTP failure, a job becomes `interrupted` and must be resumed
 explicitly. This is intentional: the application never silently restarts work.
+Date-to-article-number discovery is approximate because provider article dates
+are not necessarily ordered. Scans include a safety window of at least 100
+article numbers (or one batch, whichever is larger) around discovered bounds,
+but unusually disordered dates outside that window can still be missed.
 
 Search operates on local headers. Search by subject, author, newsgroup, exact
 Message-ID, and/or inclusive UTC start and end dates. A result page continues
@@ -22,12 +26,30 @@ state without contacting NNTP. **Retrieve text** is explicit. It reuses cached
 text when available; otherwise it requests a bounded body from a known
 endpoint-local article location. A marked unwanted article cannot trigger a new
 body retrieval until its mark is cleared. Text can be exported as `.txt`.
+When fetched, the application also retains the original headers and bounded
+body, reports parsing warnings and MIME-part metadata, and offers a sanitized
+HTML view where available. Remote resources and active content are removed.
+Quotes and signatures can be expanded in the reading view. The evidence panel
+shows the original overview, its source, and the normalizer version. Select
+**Reprocess stored source** to rebuild derived values locally; older records
+whose original overview was not retained cannot be reprocessed this way.
+
+Under **Coverage**, use **Archive verification** to inspect possible issues
+such as inconsistent memberships, duplicate cached text, suspicious dates,
+and interrupted jobs. The checks are read-only and paginated, and findings can
+change between pages while indexing runs. A location without scan coverage can
+be an ordinary result of retention discovery; review its context before acting.
+Existing unwanted marks can be cleared and do not delete archive data.
+The **Invalid Message-IDs** check can open a retained overview that could not
+safely become a canonical article. A provider location conflict records when
+the same article number was later observed with another Message-ID.
 
 If an account has a configured transfer quota, NNTP traffic is accounted
 durably across body downloads and header scans, including discovery probes and
 retries. A request or scan that exhausts the allowance stops before doing more
 NNTP work; the final request that crosses a limit may already have transferred
-its bounded response and is not cached.
+its bounded response and is not cached. Actual transferred bytes are recorded,
+including failed requests; concurrent operations can exceed the limit together.
 
 The storage/coverage view separates locally stored newsgroups from
 endpoint-specific scan evidence. A complete interval on one endpoint is not a

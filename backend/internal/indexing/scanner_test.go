@@ -2,6 +2,7 @@ package indexing
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"testing"
@@ -15,6 +16,7 @@ type fakeClient struct {
 	group            nntp.Group
 	records          map[int64]nntp.Overview
 	overviewFailures int
+	partialFailure   bool
 	overviewCalls    int
 	transferBytes    int64
 	authenticateErr  error
@@ -34,6 +36,13 @@ func (f *fakeClient) Overview(_ context.Context, low, high int64, receive func(n
 	f.transferBytes += 7
 	if f.overviewFailures > 0 {
 		f.overviewFailures--
+		if f.partialFailure {
+			if item, ok := f.records[low]; ok {
+				if err := receive(item); err != nil {
+					return err
+				}
+			}
+		}
 		return fmt.Errorf("temporary overview failure")
 	}
 	for n := low; n <= high; n++ {
@@ -44,6 +53,45 @@ func (f *fakeClient) Overview(_ context.Context, low, high int64, receive func(n
 		}
 	}
 	return nil
+}
+
+func TestOverviewDiscardsRecordsFromFailedAttempt(t *testing.T) {
+	client := &fakeClient{records: map[int64]nntp.Overview{1: {ArticleNumber: 1}}, overviewFailures: 1, partialFailure: true}
+	var got []nntp.Overview
+	err := (Scanner{Client: client, RetryBaseDelay: time.Nanosecond}).overview(context.Background(), 1, 1, func(item nntp.Overview) error { got = append(got, item); return nil })
+	if err != nil || len(got) != 1 || client.overviewCalls != 2 {
+		t.Fatalf("got %#v after %d calls, error %v", got, client.overviewCalls, err)
+	}
+}
+
+func TestDiscoveryPropagatesQuotaFailure(t *testing.T) {
+	client := &fakeClient{group: nntp.Group{Low: 1, High: 2}, records: map[int64]nntp.Overview{1: {ArticleNumber: 1}}}
+	quotaError := errors.New("quota")
+	calls := 0
+	scanner := Scanner{Client: client, RecordTransfer: func(context.Context, int64) error {
+		calls++
+		if calls == 2 {
+			return quotaError
+		}
+		return nil
+	}}
+	_, err := scanner.Discover(context.Background(), jobs.Job{Newsgroup: "example", StartDate: time.Now(), EndDate: time.Now()})
+	if !errors.Is(err, quotaError) {
+		t.Fatalf("expected quota error, got %v", err)
+	}
+}
+
+func TestScannerStopsBeforeNextRequestWhenQuotaReached(t *testing.T) {
+	client := &fakeClient{group:nntp.Group{Low:1, High:2}, records:map[int64]nntp.Overview{1:{ArticleNumber:1}}}
+	quotaError := errors.New("quota reached")
+	checks := 0
+	scanner := Scanner{Client:client, Writer:&fakeWriter{}, BatchSize:1, CheckTransfer:func(context.Context) error {
+		checks++
+		if checks > 1 { return quotaError }
+		return nil
+	}}
+	err := scanner.Scan(context.Background(),jobs.Job{ID:"job",Newsgroup:"comp.test",StartDate:time.Now(),EndDate:time.Now()})
+	if !errors.Is(err,quotaError) || client.overviewCalls != 0 || client.transferBytes != 3 { t.Fatalf("err=%v overview calls=%d transfer=%d",err,client.overviewCalls,client.transferBytes) }
 }
 func (f *fakeClient) Body(context.Context, int64, int64, io.Writer) error { return nil }
 func (f *fakeClient) Close() error                                        { return nil }
@@ -77,7 +125,7 @@ func TestScannerDiscoversAndFiltersInBoundedBatches(t *testing.T) {
 	if err := (Scanner{Client: client, Writer: writer, BatchSize: 2}).Scan(context.Background(), job); err != nil {
 		t.Fatalf("Scan() error = %v", err)
 	}
-	if len(writer.batches) != 1 || writer.batches[0].RangeStart != 2 || writer.batches[0].RangeEnd != 3 || len(writer.batches[0].Overviews) != 2 {
+	if len(writer.batches) != 3 || writer.batches[0].RangeStart != 1 || writer.batches[2].RangeEnd != 5 || len(writer.batches[0].Overviews) != 1 || len(writer.batches[1].Overviews) != 1 {
 		t.Fatalf("batches = %#v", writer.batches)
 	}
 }

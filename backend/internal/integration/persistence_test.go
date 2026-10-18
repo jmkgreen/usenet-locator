@@ -144,7 +144,7 @@ func TestPersistenceWorkflow(t *testing.T) {
 	if err != nil || len(coverage) != 1 || coverage[0].Endpoint != "primary" || coverage[0].State != "complete" {
 		t.Fatalf("coverage = %#v, err = %v", coverage, err)
 	}
-	if usage, err := quota.ListUsage(ctx); err != nil || len(usage) != 1 || usage[0].TransferUsedBytes != 7 {
+	if usage, err := quota.ListUsage(ctx); err != nil || len(usage) != 1 || usage[0].TransferUsedBytes != 11 {
 		t.Fatalf("quota usage = %#v, err = %v", usage, err)
 	}
 	qualificationStore := qualification.NewStore(db.Pool)

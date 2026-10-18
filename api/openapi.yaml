@@ -168,6 +168,75 @@ paths:
         '409': {description: Article is locally marked unwanted}
         '429': {description: Configured provider transfer quota has been reached}
         '502': {description: NNTP retrieval failed}
+  /articles/{id}/reader:
+    get:
+      operationId: getCachedReader
+      summary: Read cached text, sanitized HTML, MIME details, warnings, and source headers
+      description: Reads local data only and never contacts an NNTP provider.
+      parameters: [{$ref: '#/components/parameters/ArticleID'}]
+      responses:
+        '200': {description: Cached reader representation, content: {application/json: {schema: {$ref: '#/components/schemas/ArticleReader'}}}}
+        '409': {description: Body has not been retrieved}
+  /articles/{id}/reprocess:
+    post:
+      operationId: reprocessArticle
+      summary: Rebuild derived values from retained local source bytes
+      parameters: [{$ref: '#/components/parameters/ArticleID'}]
+      responses:
+        '204': {description: Reprocessed without contacting a provider}
+        '404': {description: Article does not exist}
+        '409': {description: Original overview was not retained}
+  /articles/{id}/reader/html/download:
+    get:
+      operationId: downloadSanitizedArticleHTML
+      summary: Download the cached sanitized HTML representation
+      parameters: [{$ref: '#/components/parameters/ArticleID'}]
+      responses:
+        '200': {description: Sanitized HTML attachment, content: {text/html: {schema: {type: string}}}}
+        '404': {description: No cached HTML representation is available}
+        '409': {description: Body has not been retrieved}
+  /archive/verification:
+    get:
+      operationId: verifyArchive
+      summary: Run one paginated, read-only archive consistency check
+      description: Findings are evidence for review. A location without scan coverage can originate from retention discovery. Results may change between pages while indexing runs.
+      parameters:
+        - {name: category, in: query, required: true, schema: {type: string, enum: [possible_identity_conflicts, invalid_identities, repeated_bodies, membership_inconsistencies, location_conflicts, orphaned_locations, orphaned_bodies, locations_without_coverage, coverage_without_locations, suspicious_dates, body_warnings, job_counters]}}
+        - {name: after, in: query, schema: {type: string, maxLength: 64}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 50}}
+      responses:
+        '200':
+          description: Findings and an optional continuation cursor
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [category, findings]
+                properties:
+                  category: {type: string}
+                  next_cursor: {type: string}
+                  findings: {type: array, items: {type: object, required: [key, description], properties: {key: {type: string}, description: {type: string}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+  /archive/quarantined/{id}:
+    get:
+      operationId: getQuarantinedOverview
+      summary: Inspect original fields of an overview without a usable Message-ID
+      parameters: [{$ref: '#/components/parameters/ArticleID'}]
+      responses:
+        '200':
+          description: Endpoint, group, article number, reason and base64-encoded original fields
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: {type: integer, format: int64}
+                  endpoint: {type: string}
+                  newsgroup: {type: string}
+                  article_number: {type: integer, format: int64}
+                  reason: {type: string}
+                  source_overview: {type: object, additionalProperties: {type: string, contentEncoding: base64}}
+        '404': {description: Overview not found}
   /search:
     get:
       operationId: searchStoredHeaders
@@ -486,6 +555,23 @@ components:
             lines: {type: [integer, 'null'], format: int64}
             newsgroups: {type: array, items: {type: string}}
             cached_body: {type: boolean}
+            normalizer_version: {type: [integer, 'null']}
+            normalized_subject: {type: string}
+            quality_flags: {type: array, items: {type: string}}
+            source_overview: {type: [object, 'null'], description: Original overview field bytes, encoded as base64, additionalProperties: {type: string, contentEncoding: base64}}
+            source_endpoint: {type: string}
+            source_newsgroup: {type: string}
+            source_article_number: {type: [integer, 'null'], format: int64}
+    ArticleReader:
+      type: object
+      required: [text, parts, flags, normalizer_version]
+      properties:
+        text: {type: string}
+        html: {type: string, description: Sanitized HTML without active content or external URLs}
+        raw_headers: {type: string, description: Display representation of fetched source headers}
+        normalizer_version: {type: integer, description: Zero indicates a legacy cached body}
+        flags: {type: array, items: {type: string}}
+        parts: {type: array, items: {type: object, properties: {content_type: {type: string}, filename: {type: string}, disposition: {type: string}}}}
     ArticleText:
       type: object
       required: [text]

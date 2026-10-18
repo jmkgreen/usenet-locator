@@ -6,10 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jmkgreen/usenet-locator/backend/internal/archive"
 	"github.com/jmkgreen/usenet-locator/backend/internal/jobs"
 	"github.com/jmkgreen/usenet-locator/backend/internal/nntp"
 )
@@ -60,14 +61,28 @@ func (s Store) PersistBatch(ctx context.Context, batch Batch) (Result, error) {
 	if state != jobs.Running {
 		return Result{}, ErrJobNotRunning
 	}
+	var lastCommitted *int64
+	if err := tx.QueryRow(ctx, `SELECT last_committed_article_number FROM job_checkpoints WHERE job_id = $1 FOR UPDATE`, batch.JobID).Scan(&lastCommitted); err != nil {
+		return Result{}, fmt.Errorf("lock index checkpoint: %w", err)
+	}
+	if lastCommitted != nil && batch.RangeEnd <= *lastCommitted {
+		// The client may not have received the result of a successful commit.
+		return Result{}, nil
+	}
+	if lastCommitted != nil && batch.RangeStart <= *lastCommitted {
+		return Result{}, fmt.Errorf("index batch overlaps committed checkpoint")
+	}
 
 	result := Result{HeadersRetrieved: batch.HeadersRetrieved}
 	for _, overview := range batch.Overviews {
 		if !validMessageID(overview.MessageID) {
 			result.InvalidMessageID++
+			if err := archive.QuarantineOverview(ctx, tx, overview, endpointID, groupID); err != nil {
+				return Result{}, err
+			}
 			continue
 		}
-		articleID, err := upsertArticle(ctx, tx, overview)
+		articleID, err := archive.UpsertOverview(ctx, tx, overview, endpointID, groupID)
 		if err != nil {
 			return Result{}, err
 		}
@@ -120,8 +135,9 @@ func (s Store) AdvanceCovered(ctx context.Context, batch Batch) error {
 	if err := batch.validate(); err != nil {
 		return err
 	}
-	command, err := s.pool.Exec(ctx, `UPDATE job_checkpoints c SET next_article_number = $1,
-        last_committed_article_number = $2, revision = revision + 1, updated_at = now()
+	command, err := s.pool.Exec(ctx, `UPDATE job_checkpoints c SET next_article_number = GREATEST(COALESCE(c.next_article_number, 0), $1),
+        last_committed_article_number = GREATEST(COALESCE(c.last_committed_article_number, 0), $2),
+        revision = revision + CASE WHEN COALESCE(c.next_article_number, 0) < $1 THEN 1 ELSE 0 END, updated_at = now()
         FROM index_jobs j WHERE c.job_id = j.id AND j.id = $3 AND j.state = 'running'`, batch.NextArticle, batch.RangeEnd, batch.JobID)
 	if err != nil {
 		return fmt.Errorf("advance covered checkpoint: %w", err)
@@ -147,23 +163,6 @@ func (b Batch) validate() error {
 	return nil
 }
 
-func upsertArticle(ctx context.Context, tx pgx.Tx, overview nntp.Overview) (int64, error) {
-	var articleID int64
-	var date *time.Time
-	if !overview.Date.IsZero() {
-		value := overview.Date.UTC()
-		date = &value
-	}
-	err := tx.QueryRow(ctx, `INSERT INTO articles (message_id, subject, author, article_date, raw_date, references_header, byte_count, line_count)
-        VALUES ($1, $2, $3, $4, NULLIF($5, ''), NULLIF($6, ''), NULLIF($7, 0), NULLIF($8, 0))
-        ON CONFLICT (message_id) DO UPDATE SET updated_at = now()
-		RETURNING id`, overview.MessageID, overview.Subject, overview.Author, date, overview.RawDate, overview.References, overview.Bytes, overview.Lines).Scan(&articleID)
-	if err != nil {
-		return 0, fmt.Errorf("upsert article: %w", err)
-	}
-	return articleID, nil
-}
-
 func validMessageID(value string) bool {
-	return strings.HasPrefix(value, "<") && strings.HasSuffix(value, ">") && strings.Contains(value, "@") && !strings.ContainsAny(value, " \t\r\n")
+	return utf8.ValidString(value) && strings.HasPrefix(value, "<") && strings.HasSuffix(value, ">") && strings.Contains(value, "@") && !strings.ContainsAny(value, " \t\r\n\x00")
 }

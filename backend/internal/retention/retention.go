@@ -51,6 +51,7 @@ func (s Service) RetrieveNext(ctx context.Context, group string, limit int) erro
 		return fmt.Errorf("newsgroup and a limit from 1 to 100 are required")
 	}
 	foundCursor := false
+	var failures []error
 	for _, endpoint := range s.endpoints {
 		if !endpoint.IsEnabled() {
 			continue
@@ -67,13 +68,16 @@ func (s Service) RetrieveNext(ctx context.Context, group string, limit int) erro
 			continue
 		}
 		if err := s.retrieveEndpoint(ctx, endpoint, group, start, high, limit); err != nil {
-			return err
+			failures = append(failures, fmt.Errorf("provider %s: %w", endpoint.ID, err))
+			if ctx.Err() != nil {
+				return errors.Join(failures...)
+			}
 		}
 	}
 	if !foundCursor {
 		return fmt.Errorf("find earliest retained article before retrieving older headers")
 	}
-	return nil
+	return errors.Join(failures...)
 }
 
 func (s Service) retrieveEndpoint(ctx context.Context, endpoint config.EndpointConfig, group string, start, high int64, limit int) error {
@@ -89,6 +93,9 @@ func (s Service) retrieveEndpoint(ctx context.Context, endpoint config.EndpointC
 		return err
 	}
 	defer release()
+	if err := s.checkQuota(ctx, account.ID); err != nil {
+		return err
+	}
 	username, password, err := account.Credentials()
 	if err != nil {
 		return fmt.Errorf("credentials unavailable")
@@ -102,7 +109,9 @@ func (s Service) retrieveEndpoint(ctx context.Context, endpoint config.EndpointC
 	defer func() {
 		if !charged && s.quota != nil {
 			if meter, ok := client.(nntp.TransferMeter); ok && meter.TransferBytes() > 0 {
-				_ = s.quota.Consume(ctx, account.ID, meter.TransferBytes())
+				chargeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				defer cancel()
+				_ = s.quota.Consume(chargeCtx, account.ID, meter.TransferBytes())
 			}
 		}
 	}()
@@ -124,7 +133,7 @@ func (s Service) retrieveEndpoint(ctx context.Context, endpoint config.EndpointC
 		end := min(next+probeWindow-1, high)
 		window := make(map[int64]nntp.Overview)
 		if err := client.Overview(ctx, next, end, func(item nntp.Overview) error {
-			if item.ArticleNumber >= next && item.ArticleNumber <= end && validMessageID(item.MessageID) {
+			if item.ArticleNumber >= next && item.ArticleNumber <= end {
 				window[item.ArticleNumber] = item
 			}
 			return nil
@@ -162,20 +171,7 @@ func (s Service) retrieveEndpoint(ctx context.Context, endpoint config.EndpointC
 }
 
 func (s Service) checkQuota(ctx context.Context, accountID string) error {
-	reader, ok := s.quota.(accounts.UsageReader)
-	if !ok {
-		return nil
-	}
-	usage, err := reader.ListUsage(ctx)
-	if err != nil {
-		return err
-	}
-	for _, item := range usage {
-		if item.AccountID == accountID && item.TransferLimitBytes != nil && item.TransferUsedBytes >= *item.TransferLimitBytes {
-			return accounts.ErrQuotaExceeded
-		}
-	}
-	return nil
+	return accounts.CheckAvailable(ctx, s.quota, accountID)
 }
 
 type DialFunc func(context.Context, nntp.Endpoint) (nntp.Client, error)
@@ -269,6 +265,12 @@ func (s Service) probeEndpoint(ctx context.Context, endpoint config.EndpointConf
 		return observation
 	}
 	defer release()
+	if err := s.checkQuota(ctx, account.ID); err != nil {
+		if errors.Is(err, accounts.ErrQuotaExceeded) {
+			observation.Outcome = "quota_reached"
+		}
+		return observation
+	}
 	username, password, err := account.Credentials()
 	if err != nil {
 		return observation
@@ -282,7 +284,9 @@ func (s Service) probeEndpoint(ctx context.Context, endpoint config.EndpointConf
 		if meter, ok := client.(nntp.TransferMeter); ok {
 			observation.TransferBytes = meter.TransferBytes()
 			if s.quota != nil && observation.TransferBytes > 0 {
-				if err := s.quota.Consume(ctx, account.ID, observation.TransferBytes); err != nil {
+				chargeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				defer cancel()
+				if err := s.quota.Consume(chargeCtx, account.ID, observation.TransferBytes); err != nil {
 					if errors.Is(err, accounts.ErrQuotaExceeded) {
 						observation.Outcome = "quota_reached"
 					} else {

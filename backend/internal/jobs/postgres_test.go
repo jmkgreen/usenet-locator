@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"net/url"
 	"os"
 	"testing"
@@ -72,6 +73,9 @@ func TestPostgresFanoutLifecycle(t *testing.T) {
 	}
 	if err := store.ConsumeTransfer(ctx, first.ID, 5); err != nil {
 		t.Fatalf("consume child budget: %v", err)
+	}
+	if err := store.CheckTransfer(ctx, first.ID); !errors.Is(err, ErrTransferLimitExceeded) {
+		t.Fatalf("exhausted budget check: %v", err)
 	}
 	if err := store.ConsumeTransfer(ctx, first.ID, 1); err == nil {
 		t.Fatal("accepted transfer beyond child budget")

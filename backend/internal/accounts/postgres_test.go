@@ -63,8 +63,11 @@ func TestPostgresQuotaStoreEnforcesDurableTransferLimit(t *testing.T) {
 	if err != nil || len(usage) != 2 {
 		t.Fatalf("usage = %#v, err = %v", usage, err)
 	}
-	if usage[0].AccountID != "limited" || usage[0].TransferUsedBytes != 60 || usage[0].TransferLimitBytes == nil || *usage[0].TransferLimitBytes != 100 {
+	if usage[0].AccountID != "limited" || usage[0].TransferUsedBytes != 101 || usage[0].TransferLimitBytes == nil || *usage[0].TransferLimitBytes != 100 {
 		t.Fatalf("limited usage = %#v", usage[0])
+	}
+	if err := CheckAvailable(ctx, store, "limited"); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("exhausted account check = %v", err)
 	}
 	if usage[1].AccountID != "unlimited" || usage[1].TransferUsedBytes != 250 || usage[1].TransferLimitBytes != nil {
 		t.Fatalf("unlimited usage = %#v", usage[1])

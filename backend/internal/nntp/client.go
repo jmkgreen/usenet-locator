@@ -36,6 +36,11 @@ type TransferMeter interface {
 	TransferBytes() int64
 }
 
+// HeaderClient is optional for adapters that can fetch a bounded raw HEAD.
+type HeaderClient interface {
+	Head(context.Context, int64, int64, io.Writer) error
+}
+
 // OverviewFormatClient is an optional diagnostic surface.  It deliberately
 // reports only the numeric outcome and recognised standard field names, not
 // arbitrary provider response text.

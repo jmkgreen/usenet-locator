@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jmkgreen/usenet-locator/backend/internal/archive"
 	"github.com/jmkgreen/usenet-locator/backend/internal/config"
 	"github.com/jmkgreen/usenet-locator/backend/internal/database"
 	"github.com/jmkgreen/usenet-locator/backend/internal/indexing"
@@ -131,6 +132,21 @@ func TestPostgresStoredArticleJourney(t *testing.T) {
 	}
 	if body, err := store.CachedBody(ctx, articleID); err != nil || body != "cached article text" {
 		t.Fatalf("cached body = %q, err = %v", body, err)
+	}
+	legacy, err := store.CachedReader(ctx, articleID)
+	if err != nil || legacy.Text != "cached article text" || legacy.NormalizerVersion != 0 {
+		t.Fatalf("legacy reader = %#v, %v", legacy, err)
+	}
+	reader := archive.DecodeReader([]byte("Content-Type: text/html\n"), []byte("<p>Hello<script>danger()</script></p>"), 1024)
+	if err := store.SaveReader(ctx, articleID, target.EndpointID, []byte("Content-Type: text/html\n"), []byte("<p>Hello<script>danger()</script></p>"), reader); err != nil {
+		t.Fatal(err)
+	}
+	cached, err := store.CachedReader(ctx, articleID)
+	if err != nil || cached.HTML != "<p>Hello</p>" || cached.NormalizerVersion != archive.NormalizerVersion || len(cached.Parts) != 1 {
+		t.Fatalf("cached reader = %#v, %v", cached, err)
+	}
+	if _, err := store.CachedReader(ctx, 999999); !errors.Is(err, ErrBodyNotCached) {
+		t.Fatalf("missing reader = %v", err)
 	}
 	if refreshed, err := store.GetDetail(ctx, articleID); err != nil || !refreshed.CachedBody {
 		t.Fatalf("refreshed detail = %#v, err = %v", refreshed, err)

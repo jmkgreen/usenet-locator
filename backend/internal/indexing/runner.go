@@ -54,11 +54,17 @@ func (r Runner) Run(ctx context.Context, job jobs.Job) error {
 	if !ok {
 		return r.interrupt(ctx, job.ID, "configured account is unavailable")
 	}
+	if err := accounts.CheckAvailable(ctx, r.Quota, account.ID); err != nil {
+		return r.interrupt(ctx, job.ID, transferFailureReason(err))
+	}
 	release, err := r.Guard.Acquire(ctx, account.ID)
 	if err != nil {
 		return r.interrupt(ctx, job.ID, "NNTP account connection limit unavailable")
 	}
 	defer release()
+	if err := accounts.CheckAvailable(ctx, r.Quota, account.ID); err != nil {
+		return r.interrupt(ctx, job.ID, transferFailureReason(err))
+	}
 	if r.Dial == nil || r.Writer == nil || r.Finalizer == nil || r.BatchSize < 1 {
 		return r.interrupt(ctx, job.ID, "index worker is incomplete")
 	}
@@ -72,6 +78,14 @@ func (r Runner) Run(ctx context.Context, job jobs.Job) error {
 	}
 	defer client.Close()
 	charged := int64(0)
+	defer func() {
+		remaining := transferBytes(client) - charged
+		if remaining > 0 {
+			chargeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			_ = r.recordTransfer(chargeCtx, account.ID, job.ID, remaining)
+		}
+	}()
 	if err := client.Authenticate(ctx, username, password); err != nil {
 		return r.interrupt(ctx, job.ID, "NNTP authentication failed")
 	}
@@ -81,10 +95,21 @@ func (r Runner) Run(ctx context.Context, job jobs.Job) error {
 	if err := client.ModeReader(ctx); err != nil {
 		return r.interrupt(ctx, job.ID, "NNTP reader mode failed")
 	}
-	if err := r.recordTransfer(ctx, account.ID, job.ID, transferBytes(client)-charged); err != nil {
+	initial := transferBytes(client) - charged
+	charged += initial
+	if err := r.recordTransfer(ctx, account.ID, job.ID, initial); err != nil {
 		return r.interrupt(ctx, job.ID, transferFailureReason(err))
 	}
-	if err := (Scanner{Client: client, Writer: r.Writer, BatchSize: r.BatchSize, RecordTransfer: func(ctx context.Context, bytes int64) error {
+	if err := (Scanner{Client: client, Writer: r.Writer, BatchSize: r.BatchSize, CheckTransfer: func(ctx context.Context) error {
+		if err := accounts.CheckAvailable(ctx, r.Quota, account.ID); err != nil {
+			return err
+		}
+		if checker, ok := r.JobQuota.(jobs.TransferChecker); ok {
+			return checker.CheckTransfer(ctx, job.ID)
+		}
+		return nil
+	}, RecordTransfer: func(ctx context.Context, bytes int64) error {
+		charged += bytes
 		return r.recordTransfer(ctx, account.ID, job.ID, bytes)
 	}}).Scan(ctx, job); err != nil {
 		if errors.Is(err, accounts.ErrQuotaExceeded) || errors.Is(err, jobs.ErrTransferLimitExceeded) {
@@ -128,15 +153,14 @@ func (r Runner) recordTransfer(ctx context.Context, accountID, jobID string, byt
 	if bytes <= 0 {
 		return nil
 	}
+	var accountErr, jobErr error
 	if r.Quota != nil {
-		if err := r.Quota.Consume(ctx, accountID, bytes); err != nil {
-			return err
-		}
+		accountErr = r.Quota.Consume(ctx, accountID, bytes)
 	}
 	if r.JobQuota != nil {
-		return r.JobQuota.ConsumeTransfer(ctx, jobID, bytes)
+		jobErr = r.JobQuota.ConsumeTransfer(ctx, jobID, bytes)
 	}
-	return nil
+	return errors.Join(accountErr, jobErr)
 }
 
 func transferFailureReason(err error) string {

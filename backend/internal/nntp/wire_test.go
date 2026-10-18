@@ -53,6 +53,25 @@ func TestOverviewFallsBackAndStreamsValidRecords(t *testing.T) {
 	}
 }
 
+func TestHeadFetchesOnlyBoundedHeaders(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	go func() {
+		defer serverConn.Close()
+		r, w := bufio.NewReader(serverConn), bufio.NewWriter(serverConn)
+		if line, _ := r.ReadString('\n'); line != "HEAD 7\r\n" {
+			return
+		}
+		_, _ = w.WriteString("221 header follows\r\nContent-Type: text/plain\r\nX-Test: yes\r\n.\r\n")
+		_ = w.Flush()
+	}()
+	c := &wireClient{conn: clientConn, text: textproto.NewConn(clientConn), ep: Endpoint{ReadTimeout: time.Second}}
+	var headers bytes.Buffer
+	if err := c.Head(context.Background(), 7, 256, &headers); err != nil || !strings.Contains(headers.String(), "Content-Type: text/plain") {
+		t.Fatalf("headers %q, error %v", headers.String(), err)
+	}
+}
+
 func TestOverviewReturnsOnlyCommandAndCodeForServerFailure(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	t.Cleanup(func() { _ = clientConn.Close() })

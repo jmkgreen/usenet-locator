@@ -28,6 +28,18 @@ explains the workflows and the [deployment guide](deployment.md) their setup.
 - Inspect stored article metadata and known newsgroup memberships. Explicitly
   retrieve text, reuse the cached text, and download it as `.txt`. The UI does
   not automatically fetch bodies during header browsing.
+- New overview records retain their original field bytes and provider location,
+  versioned normalized values, and informational quality flags. The reader
+  can reprocess retained source locally. Existing articles without retained
+  source remain searchable but cannot be reprocessed from source.
+- Explicit body retrieval records bounded raw headers and body bytes, extracts
+  text and MIME-part metadata, and presents sanitized HTML without active
+  content or external resources. Existing text-only caches remain readable.
+- Coverage includes paginated, read-only archive verification checks. Findings
+  are possible issues to review, not automatic cleanup or deletion decisions.
+  Overviews with invalid Message-IDs are retained separately with their
+  endpoint, group, and original fields for inspection; they do not become
+  canonical articles. Provider article-number identity changes are recorded.
 - This is a text research workflow; attachment access and binary/NZB workflows
   should not be assumed to be available. See [planned reading and archive
   work](features-planned.md#archive-quality-reading-and-interoperability).

@@ -46,18 +46,24 @@ func New(cfg config.Config, guard accounts.Guard, quota accounts.QuotaConsumer) 
 }
 func (s Service) Run(ctx context.Context, endpointID, messageID, group string, articleNumber int64) (result Result, err error) {
 	e, ok := s.Endpoints[endpointID]
-	if !ok {
+	if !ok || !e.IsEnabled() {
 		return result, fmt.Errorf("endpoint unavailable")
 	}
 	a, ok := s.Accounts[e.AccountID]
 	if !ok {
 		return result, fmt.Errorf("account unavailable")
 	}
+	if err := accounts.CheckAvailable(ctx, s.Quota, a.ID); err != nil {
+		return result, err
+	}
 	release, err := s.Guard.Acquire(ctx, a.ID)
 	if err != nil {
 		return result, fmt.Errorf("connection limit unavailable")
 	}
 	defer release()
+	if err := accounts.CheckAvailable(ctx, s.Quota, a.ID); err != nil {
+		return result, err
+	}
 	u, p, err := a.Credentials()
 	if err != nil {
 		return result, fmt.Errorf("credentials unavailable")
@@ -69,7 +75,9 @@ func (s Service) Run(ctx context.Context, endpointID, messageID, group string, a
 	defer c.Close()
 	defer func() {
 		if m, ok := c.(nntp.TransferMeter); ok && s.Quota != nil {
-			if qerr := s.Quota.Consume(ctx, a.ID, m.TransferBytes()); err == nil && qerr != nil {
+			chargeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			if qerr := s.Quota.Consume(chargeCtx, a.ID, m.TransferBytes()); err == nil && qerr != nil {
 				err = qerr
 			}
 		}

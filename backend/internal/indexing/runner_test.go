@@ -210,11 +210,11 @@ func TestRecordTransferHonoursAccountAndZeroTrafficBoundaries(t *testing.T) {
 	if err := runner.recordTransfer(context.Background(), "account", "job", 0); err != nil || accountQuota.consumed != 0 || jobQuota.consumed != 0 {
 		t.Fatalf("zero transfer err=%v account=%d job=%d", err, accountQuota.consumed, jobQuota.consumed)
 	}
-	if err := runner.recordTransfer(context.Background(), "account", "job", 7); !errors.Is(err, accounts.ErrQuotaExceeded) || jobQuota.consumed != 0 {
+	if err := runner.recordTransfer(context.Background(), "account", "job", 7); !errors.Is(err, accounts.ErrQuotaExceeded) || jobQuota.consumed != 7 {
 		t.Fatalf("account failure err=%v job=%d", err, jobQuota.consumed)
 	}
 	accountQuota.err = nil
-	if err := runner.recordTransfer(context.Background(), "account", "job", 5); err != nil || accountQuota.consumed != 12 || jobQuota.consumed != 5 {
+	if err := runner.recordTransfer(context.Background(), "account", "job", 5); err != nil || accountQuota.consumed != 12 || jobQuota.consumed != 12 {
 		t.Fatalf("successful transfer err=%v account=%d job=%d", err, accountQuota.consumed, jobQuota.consumed)
 	}
 }

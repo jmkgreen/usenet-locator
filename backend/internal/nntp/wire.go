@@ -285,6 +285,32 @@ func (c *wireClient) Body(ctx context.Context, articleNumber, maxBytes int64, de
 	return nil
 }
 
+// Head returns only the headers of the explicitly selected article.
+func (c *wireClient) Head(ctx context.Context, articleNumber, maxBytes int64, destination io.Writer) error {
+	if articleNumber <= 0 || maxBytes <= 0 || destination == nil {
+		return fmt.Errorf("positive article number, header limit, and destination are required")
+	}
+	code, _, err := c.command(ctx, "HEAD %d", articleNumber)
+	if err != nil {
+		return err
+	}
+	if code != 221 {
+		return &OverviewError{Command: "HEAD", Code: code}
+	}
+	defer c.clearDeadline()
+	if err := c.deadline(ctx); err != nil {
+		return err
+	}
+	written, err := io.Copy(destination, io.LimitReader(c.text.DotReader(), maxBytes+1))
+	if err != nil {
+		return fmt.Errorf("stream headers: %w", err)
+	}
+	if written > maxBytes {
+		return fmt.Errorf("headers exceed configured limit")
+	}
+	return nil
+}
+
 func (c *wireClient) Close() error { return c.conn.Close() }
 func (c *wireClient) TransferBytes() int64 {
 	if c.meter == nil {

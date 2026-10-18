@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jmkgreen/usenet-locator/backend/internal/accounts"
+	"github.com/jmkgreen/usenet-locator/backend/internal/archive"
 	"github.com/jmkgreen/usenet-locator/backend/internal/articles"
 	"github.com/jmkgreen/usenet-locator/backend/internal/indexing"
 	"github.com/jmkgreen/usenet-locator/backend/internal/jobs"
@@ -87,6 +88,69 @@ func WithStaticFiles(api http.Handler, assets fs.FS) http.Handler {
 func WithBodyRetrieval(next http.Handler, fetcher BodyFetcher) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		const articlePrefix = "/api/v1/articles/"
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, articlePrefix) && strings.HasSuffix(r.URL.Path, "/reader/html/download") {
+			idText := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, articlePrefix), "/reader/html/download")
+			id, err := strconv.ParseInt(idText, 10, 64)
+			if err != nil || id < 1 {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "article not found"})
+				return
+			}
+			reader, ok := fetcher.(interface {
+				GetCachedReader(context.Context, int64) (archive.Reader, error)
+			})
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			result, err := reader.GetCachedReader(r.Context(), id)
+			if errors.Is(err, articles.ErrBodyNotCached) {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "article text has not been retrieved"})
+				return
+			}
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not load cached article"})
+				return
+			}
+			if result.HTML == "" {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "no HTML representation is available"})
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=article-%d.html", id))
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
+			_, _ = io.WriteString(w, archive.SanitizeHTML(result.HTML))
+			return
+		}
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, articlePrefix) && strings.HasSuffix(r.URL.Path, "/reader") {
+			idText := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, articlePrefix), "/reader")
+			id, err := strconv.ParseInt(idText, 10, 64)
+			if err != nil || id < 1 {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "article not found"})
+				return
+			}
+			reader, ok := fetcher.(interface {
+				GetCachedReader(context.Context, int64) (archive.Reader, error)
+			})
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			result, err := reader.GetCachedReader(r.Context(), id)
+			if errors.Is(err, articles.ErrBodyNotCached) {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "article text has not been retrieved"})
+				return
+			}
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not load cached article"})
+				return
+			}
+			if result.HTML != "" {
+				result.HTML = archive.SanitizeHTML(result.HTML)
+			}
+			writeJSON(w, http.StatusOK, result)
+			return
+		}
 		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, articlePrefix) && strings.HasSuffix(r.URL.Path, "/body/download") {
 			idText := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, articlePrefix), "/body/download")
 			id, err := strconv.ParseInt(idText, 10, 64)
@@ -727,7 +791,7 @@ func getArticle(detailer articles.Detailer) http.HandlerFunc {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not retrieve article"})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"id": detail.ID, "message_id": detail.MessageID, "subject": detail.Subject, "author": detail.Author, "date": detail.Date, "references": detail.References, "bytes": detail.Bytes, "lines": detail.Lines, "newsgroups": detail.Newsgroups, "unwanted": detail.Unwanted, "cached_body": detail.CachedBody})
+		writeJSON(w, http.StatusOK, map[string]any{"id": detail.ID, "message_id": detail.MessageID, "subject": detail.Subject, "author": detail.Author, "date": detail.Date, "references": detail.References, "bytes": detail.Bytes, "lines": detail.Lines, "newsgroups": detail.Newsgroups, "unwanted": detail.Unwanted, "cached_body": detail.CachedBody, "normalizer_version": detail.NormalizerVersion, "normalized_subject": detail.NormalizedSubject, "quality_flags": detail.QualityFlags, "source_overview": detail.SourceOverview, "source_endpoint": detail.SourceEndpoint, "source_newsgroup": detail.SourceNewsgroup, "source_article_number": detail.SourceArticleNumber})
 	}
 }
 

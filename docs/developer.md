@@ -24,8 +24,9 @@ NNTP protocol changes require scripted transcript tests. Do not log
 credentials, article content, Message-IDs, authors, subjects, or search terms.
 Use the narrow client interface and preserve bounded streaming behavior.
 
-NNTP usage is charged through the account quota store using an atomic
-PostgreSQL conditional update. The wire client measures socket reads and writes
-(including TLS records); scanner probes and retries are charged from that
-meter, never approximated from article header metadata. Keep the
-`ErrQuotaExceeded` mapping distinct from NNTP transport failures.
+NNTP usage is recorded with an atomic PostgreSQL increment, including bytes
+transferred by failed operations and the bounded operation that crosses a
+limit. A preflight check prevents starting new work after a limit is reached;
+concurrent operations may overshoot it. The wire client measures socket reads
+and writes (including TLS records); scanner probes and retries are charged
+from that meter. Keep `ErrQuotaExceeded` distinct from transport failures.

@@ -28,6 +28,7 @@ type Scanner struct {
 	RetryAttempts  int
 	RetryBaseDelay time.Duration
 	RecordTransfer func(context.Context, int64) error
+	CheckTransfer  func(context.Context) error
 }
 
 type Range struct{ Low, High int64 }
@@ -37,6 +38,11 @@ type Range struct{ Low, High int64 }
 // ambiguous, it returns the entire advertised group range: slower, but it
 // cannot silently skip history.
 func (s Scanner) Discover(ctx context.Context, job jobs.Job) (Range, error) {
+	if s.CheckTransfer != nil {
+		if err := s.CheckTransfer(ctx); err != nil {
+			return Range{}, err
+		}
+	}
 	before := s.transferBytes()
 	group, err := s.Client.Group(ctx, job.Newsgroup)
 	if recordErr := s.recordTransfer(ctx, before); recordErr != nil {
@@ -50,29 +56,56 @@ func (s Scanner) Discover(ctx context.Context, job jobs.Job) (Range, error) {
 	}
 	start := job.StartDate.AddDate(0, 0, -job.MarginDays)
 	end := job.EndDate.AddDate(0, 0, job.MarginDays+1) // exclusive
-	low, reliable := s.lowerBound(ctx, group.Low, group.High, start)
+	low, reliable, err := s.lowerBound(ctx, group.Low, group.High, start)
+	if err != nil {
+		return Range{}, err
+	}
 	if !reliable {
 		return Range{Low: group.Low, High: group.High}, nil
 	}
-	high, reliable := s.lowerBound(ctx, low, group.High, end)
+	high, reliable, err := s.lowerBound(ctx, low, group.High, end)
+	if err != nil {
+		return Range{}, err
+	}
 	if !reliable {
 		return Range{Low: group.Low, High: group.High}, nil
 	}
-	if high <= low {
-		return Range{Low: low, High: low}, nil
+	if high > low {
+		high--
+	} else {
+		high = low
 	}
-	return Range{Low: low, High: high - 1}, nil
+	// Date order is approximate. Include a bounded number window around both
+	// estimates so nearby out-of-order articles are not silently missed.
+	window := s.BatchSize
+	if window < 100 {
+		window = 100
+	}
+	if low-group.Low < window {
+		low = group.Low
+	} else {
+		low -= window
+	}
+	if group.High-high < window {
+		high = group.High
+	} else {
+		high += window
+	}
+	return Range{Low: low, High: high}, nil
 }
 
 // lowerBound returns the first article number whose supplied date is not
 // before target. It only trusts exact-number probes with a parseable date.
-func (s Scanner) lowerBound(ctx context.Context, low, high int64, target time.Time) (int64, bool) {
+func (s Scanner) lowerBound(ctx context.Context, low, high int64, target time.Time) (int64, bool, error) {
 	for low < high {
 		middle := low + (high-low)/2
 		var sample *nntp.Overview
 		err := s.overview(ctx, middle, middle, func(item nntp.Overview) error { value := item; sample = &value; return nil })
-		if err != nil || sample == nil || sample.Date.IsZero() {
-			return 0, false
+		if err != nil {
+			return 0, false, fmt.Errorf("probe overview: %w", err)
+		}
+		if sample == nil || sample.Date.IsZero() {
+			return 0, false, nil
 		}
 		if sample.Date.Before(target) {
 			low = middle + 1
@@ -80,7 +113,7 @@ func (s Scanner) lowerBound(ctx context.Context, low, high int64, target time.Ti
 			high = middle
 		}
 	}
-	return low, true
+	return low, true, nil
 }
 
 // Scan discovers and streams the range in bounded batches. It retains an
@@ -147,12 +180,31 @@ func (s Scanner) overview(ctx context.Context, low, high int64, receive func(nnt
 	}
 	var err error
 	for attempt := 0; attempt < attempts; attempt++ {
+		if s.CheckTransfer != nil {
+			if err := s.CheckTransfer(ctx); err != nil {
+				return err
+			}
+		}
+		// A failed response may already have emitted records. Keep each attempt
+		// separate so a retry cannot duplicate headers or persist a partial batch.
+		var records []nntp.Overview
 		before := s.transferBytes()
-		err = s.Client.Overview(ctx, low, high, receive)
+		err = s.Client.Overview(ctx, low, high, func(item nntp.Overview) error {
+			if item.ArticleNumber < low || item.ArticleNumber > high || int64(len(records)) >= high-low+1 {
+				return fmt.Errorf("invalid overview response range")
+			}
+			records = append(records, item)
+			return nil
+		})
 		if recordErr := s.recordTransfer(ctx, before); recordErr != nil {
 			return recordErr
 		}
 		if err == nil {
+			for _, item := range records {
+				if err := receive(item); err != nil {
+					return err
+				}
+			}
 			return nil
 		}
 		if attempt == attempts-1 {

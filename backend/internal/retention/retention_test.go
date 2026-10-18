@@ -21,6 +21,7 @@ type memoryStore struct {
 	found        bool
 	listErr      error
 	stored       []nntp.Overview
+	rejected     []nntp.Overview
 	next         int64
 }
 
@@ -53,7 +54,14 @@ func (s *memoryStore) Cursor(context.Context, string, string) (int64, int64, boo
 	return 0, 0, false, nil
 }
 func (s *memoryStore) StoreHeaders(_ context.Context, _ string, _ string, headers []nntp.Overview, next, _ int64) error {
-	s.stored = append([]nntp.Overview(nil), headers...)
+	s.stored = nil
+	for _, header := range headers {
+		if validMessageID(header.MessageID) {
+			s.stored = append(s.stored, header)
+		} else {
+			s.rejected = append(s.rejected, header)
+		}
+	}
 	s.next = next
 	return nil
 }
@@ -169,8 +177,32 @@ func TestRetrieveNextStoresIdentifiedHeadersAndChargesTransfer(t *testing.T) {
 	if err := service.RetrieveNext(context.Background(), "alt.test", 10); err != nil {
 		t.Fatal(err)
 	}
-	if len(store.stored) != 2 || store.stored[0].MessageID != "<keep@test>" || store.stored[1].MessageID != "<undated@test>" || store.next != 13 || quota.bytes != 55 || client.group != "alt.test" {
+	if len(store.stored) != 2 || len(store.rejected) != 1 || store.stored[0].MessageID != "<keep@test>" || store.stored[1].MessageID != "<undated@test>" || store.next != 13 || quota.bytes != 55 || client.group != "alt.test" {
 		t.Fatalf("stored=%#v next=%d quota=%d group=%q", store.stored, store.next, quota.bytes, client.group)
+	}
+}
+
+func TestRetrieveNextContinuesAfterProviderFailure(t *testing.T) {
+	dir := t.TempDir()
+	username, password := filepath.Join(dir, "user"), filepath.Join(dir, "pass")
+	if err := os.WriteFile(username, []byte("user"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(password, []byte("pass"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{Accounts: []config.AccountConfig{{ID: "a", UsernameFile: username, PasswordFile: password, ConnectionLimit: 1}}, Endpoints: []config.EndpointConfig{{ID: "bad", AccountID: "a", Host: "bad.example", Port: 563}, {ID: "good", AccountID: "a", Host: "good.example", Port: 563}}}
+	store := &memoryStore{found: true, start: 10, high: 10}
+	service := New(cfg, store, accounts.NewGuard(cfg), nil)
+	service.dial = func(_ context.Context, endpoint nntp.Endpoint) (nntp.Client, error) {
+		if strings.Contains(endpoint.Address, "bad.example") {
+			return nil, errors.New("unavailable")
+		}
+		return &probeClient{overviews: []nntp.Overview{{ArticleNumber: 10, MessageID: "<good@test>"}}}, nil
+	}
+	err := service.RetrieveNext(context.Background(), "comp.test", 1)
+	if err == nil || len(store.stored) != 1 || store.stored[0].MessageID != "<good@test>" {
+		t.Fatalf("error=%v stored=%#v", err, store.stored)
 	}
 }
 

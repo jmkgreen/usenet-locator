@@ -30,6 +30,35 @@ test("search form calls the unwanted-filtered API", async () => {
   expect(fetchMock).toHaveBeenCalledWith("/api/v1/search?subject=&author=&newsgroup=&include_unwanted=false&limit=50", expect.any(Object));
 });
 
+test("archive evidence is local, reprocessing is explicit, and verification pages findings", async () => {
+  const calls: string[] = [];
+  const fetchMock = vi.fn(async (input: string | URL, options?: RequestInit) => {
+    const url = String(input); calls.push(`${options?.method ?? "GET"} ${url}`);
+    if (url.startsWith("/api/v1/search")) return new Response(JSON.stringify({ articles: [{ id: 1, message_id: "<one@test>", subject: "Example", author: "Alice", unwanted: false }], next_cursor: "", total_records: 1 }), { status: 200 });
+    if (url === "/api/v1/articles/1") return new Response(JSON.stringify({ id: 1, message_id: "<one@test>", subject: "Example", author: "Alice", unwanted: false, newsgroups: ["comp.test"], cached_body: false, quality_flags: ["invalid_date"], normalizer_version: 1, source_overview: { subject: "RXhhbXBsZQ==" } }), { status: 200 });
+    if (url === "/api/v1/articles/1/reprocess") return new Response(null, { status: 204 });
+    if (url === "/api/v1/articles/1/body") return new Response(JSON.stringify({ text: "Hello\n> old reply" }), { status: 200 });
+    if (url === "/api/v1/articles/1/reader") return new Response(JSON.stringify({ text: "Hello\n> old reply", html: "<p>safe</p>", raw_headers: "Content-Type: text/plain", flags: [], parts: [{ content_type: "text/plain" }] }), { status: 200 });
+    if (url.startsWith("/api/v1/archive/verification")) return new Response(JSON.stringify({ category: "membership_inconsistencies", findings: [{ key: url.includes("after=") ? "2" : "1", description: "Review membership" }], ...(url.includes("after=") ? {} : { next_cursor: "1" }) }), { status: 200 });
+    if (url === "/api/v1/jobs?limit=50") return new Response(JSON.stringify({ jobs: [] }), { status: 200 });
+    return new Response("{}", { status: 500 });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  await act(async () => { root.render(<App />); });
+  await click("Search"); await click("Example");
+  expect(calls.some((call) => call.includes("/body"))).toBe(false);
+  expect(document.body.textContent).toContain("invalid_date");
+  await click("Reprocess stored source");
+  expect(calls).toContain("POST /api/v1/articles/1/reprocess");
+  await click("Retrieve text");
+  expect(document.body.textContent).toContain("Quoted text");
+  expect(document.body.textContent).toContain("Content-Type: text/plain");
+  await click("Run verification");
+  expect(document.body.textContent).toContain("Review membership (record 1)");
+  await click("Next findings");
+  expect(document.body.textContent).toContain("Review membership (record 2)");
+});
+
 test("navigation isolates provider settings and persists the selected theme", async () => {
   await act(async () => { root.render(<App />); });
   const settings = [...document.querySelectorAll("nav + .toolbar button")].find((element) => element.textContent === "Settings") as HTMLButtonElement;
@@ -55,6 +84,7 @@ test("job controls, result marks, reader retrieval, and providers use the API", 
     if (url === "/api/v1/articles/unwanted") return new Response("{}", { status: 200 });
     if (url === "/api/v1/articles/4") return new Response(JSON.stringify({ id: 4, message_id: "<a@test>", subject: "A subject", author: "Alice", newsgroups: ["comp.lang.go"], unwanted: false, cached_body: false }), { status: 200 });
     if (url === "/api/v1/articles/4/body") return new Response(JSON.stringify({ text: "body text" }), { status: 200 });
+    if (url === "/api/v1/articles/4/reader") return new Response(JSON.stringify({ text: "body text", parts: [], flags: [] }), { status: 200 });
     if (url === "/api/v1/providers") return new Response(JSON.stringify({ endpoints: [{ id: "primary", host: "news.example", port: 563, tls: true, primary: true, priority: 1 }] }), { status: 200 });
     if (url === "/api/v1/providers/primary/qualifications") return new Response(JSON.stringify({ qualifications: [{ endpoint: "primary", created_at: "2026-09-30T00:00:00Z", result: { capabilities: ["READER"], overview_code: 224, overview_rows: 1, overview_dates: 1 } }] }), { status: 200 });
     if (url === "/api/v1/newsgroups") return new Response(JSON.stringify({ newsgroups: [{ name: "comp.lang.go", articles: 2 }] }), { status: 200 });

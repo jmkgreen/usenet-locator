@@ -2,6 +2,7 @@ package articles
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -17,6 +18,12 @@ type Detail struct {
 	Newsgroups                             []string
 	Unwanted                               bool
 	CachedBody                             bool
+	NormalizerVersion                      *int
+	NormalizedSubject                      string
+	QualityFlags                           []string
+	SourceOverview                         json.RawMessage
+	SourceEndpoint, SourceNewsgroup        string
+	SourceArticleNumber                    *int64
 }
 
 type Detailer interface {
@@ -32,10 +39,14 @@ func (s Store) GetDetail(ctx context.Context, id int64) (Detail, error) {
 	var detail Detail
 	err := s.pool.QueryRow(ctx, `SELECT a.id, a.message_id, COALESCE(a.subject, ''), COALESCE(a.author, ''),
         COALESCE(a.references_header, ''), a.article_date, a.byte_count, a.line_count,
-        COALESCE(p.unwanted, false), EXISTS(SELECT 1 FROM article_bodies b WHERE b.article_id = a.id)
+		COALESCE(p.unwanted, false), EXISTS(SELECT 1 FROM article_bodies b WHERE b.article_id = a.id),
+		a.normalizer_version, COALESCE(a.normalized_subject, ''), a.quality_flags, a.source_overview,
+		COALESCE(a.source_endpoint_id, ''), COALESCE((SELECT name FROM newsgroups WHERE id = a.source_newsgroup_id), ''), a.source_article_number
         FROM articles a LEFT JOIN article_preferences p ON p.article_id = a.id WHERE a.id = $1`, id).Scan(
 		&detail.ID, &detail.MessageID, &detail.Subject, &detail.Author, &detail.References, &detail.Date,
-		&detail.Bytes, &detail.Lines, &detail.Unwanted, &detail.CachedBody)
+		&detail.Bytes, &detail.Lines, &detail.Unwanted, &detail.CachedBody,
+		&detail.NormalizerVersion, &detail.NormalizedSubject, &detail.QualityFlags, &detail.SourceOverview,
+		&detail.SourceEndpoint, &detail.SourceNewsgroup, &detail.SourceArticleNumber)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Detail{}, ErrNotFound
 	}

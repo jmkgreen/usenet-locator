@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jmkgreen/usenet-locator/backend/internal/archive"
 	"github.com/jmkgreen/usenet-locator/backend/internal/nntp"
 )
 
@@ -46,7 +48,7 @@ func (s PGStore) Record(ctx context.Context, observation Observation) (Observati
 		return Observation{}, fmt.Errorf("upsert retention group: %w", err)
 	}
 	if observation.Article != nil && validMessageID(observation.Article.MessageID) {
-		articleID, err := upsertArticle(ctx, tx, observation.Article)
+		articleID, err := archive.UpsertOverview(ctx, tx, *observation.Article, observation.Endpoint, groupID)
 		if err != nil {
 			return Observation{}, err
 		}
@@ -126,9 +128,12 @@ func (s PGStore) StoreHeaders(ctx context.Context, endpoint, group string, heade
 	for i := range headers {
 		item := &headers[i]
 		if !validMessageID(item.MessageID) {
+			if err := archive.QuarantineOverview(ctx, tx, *item, endpoint, groupID); err != nil {
+				return err
+			}
 			continue
 		}
-		articleID, err := upsertArticle(ctx, tx, item)
+		articleID, err := archive.UpsertOverview(ctx, tx, *item, endpoint, groupID)
 		if err != nil {
 			return err
 		}
@@ -180,21 +185,5 @@ func (s PGStore) ListLatest(ctx context.Context, group string) ([]Observation, e
 }
 
 func validMessageID(value string) bool {
-	return strings.HasPrefix(value, "<") && strings.HasSuffix(value, ">") && strings.Contains(value, "@") && !strings.ContainsAny(value, " \t\r\n")
-}
-
-func upsertArticle(ctx context.Context, tx pgx.Tx, overview *nntp.Overview) (int64, error) {
-	var articleID int64
-	var date *time.Time
-	if !overview.Date.IsZero() {
-		value := overview.Date.UTC()
-		date = &value
-	}
-	err := tx.QueryRow(ctx, `INSERT INTO articles (message_id, subject, author, article_date, raw_date, references_header, byte_count, line_count)
-        VALUES ($1, $2, $3, $4, NULLIF($5, ''), NULLIF($6, ''), NULLIF($7, 0), NULLIF($8, 0))
-        ON CONFLICT (message_id) DO UPDATE SET updated_at = now() RETURNING id`, overview.MessageID, overview.Subject, overview.Author, date, overview.RawDate, overview.References, overview.Bytes, overview.Lines).Scan(&articleID)
-	if err != nil {
-		return 0, fmt.Errorf("upsert retention article: %w", err)
-	}
-	return articleID, nil
+	return utf8.ValidString(value) && strings.HasPrefix(value, "<") && strings.HasSuffix(value, ">") && strings.Contains(value, "@") && !strings.ContainsAny(value, " \t\r\n\x00")
 }

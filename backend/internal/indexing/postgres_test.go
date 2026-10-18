@@ -67,11 +67,22 @@ func TestPostgresStorePersistsBoundedBatchAndCoverage(t *testing.T) {
 	if err != nil || result.HeadersRetrieved != 3 || result.ArticlesStored != 2 || result.InvalidMessageID != 1 {
 		t.Fatalf("persist batch = %#v, %v", result, err)
 	}
+	var quarantined int
+	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM quarantined_overviews WHERE endpoint_id='primary' AND article_number=11`).Scan(&quarantined); err != nil || quarantined != 1 {
+		t.Fatalf("quarantined invalid overview = %d, %v", quarantined, err)
+	}
 	if covered, err := store.IsRangeCovered(ctx, job.ID, 10, 12); err != nil || !covered {
 		t.Fatalf("coverage = %v, %v", covered, err)
 	}
 	if covered, err := store.IsRangeCovered(ctx, job.ID, 9, 12); err != nil || covered {
 		t.Fatalf("overextended coverage = %v, %v", covered, err)
+	}
+	if _, err := store.PersistBatch(ctx, batch); err != nil {
+		t.Fatalf("retry committed batch: %v", err)
+	}
+	var storedCount, coverageCount int
+	if err := db.Pool.QueryRow(ctx, `SELECT articles_stored, (SELECT count(*) FROM scan_coverage WHERE job_id = $1) FROM index_jobs WHERE id = $1`, job.ID).Scan(&storedCount, &coverageCount); err != nil || storedCount != 2 || coverageCount != 1 {
+		t.Fatalf("retried batch counters=%d coverage=%d err=%v", storedCount, coverageCount, err)
 	}
 	if coverage, err := store.ListCoverage(ctx, "COMP.INDEXING"); err != nil || len(coverage) != 1 || coverage[0].Endpoint != "primary" || coverage[0].ArticleNumberStart != 10 || coverage[0].ArticleNumberEnd != 12 {
 		t.Fatalf("listed coverage=%#v err=%v", coverage, err)
@@ -81,6 +92,9 @@ func TestPostgresStorePersistsBoundedBatchAndCoverage(t *testing.T) {
 	}
 	if err := store.AdvanceCovered(ctx, Batch{JobID: job.ID, RangeStart: 13, RangeEnd: 14, NextArticle: 15}); err != nil {
 		t.Fatalf("advance durable coverage: %v", err)
+	}
+	if err := store.AdvanceCovered(ctx, Batch{JobID: job.ID, RangeStart: 10, RangeEnd: 12, NextArticle: 13}); err != nil {
+		t.Fatalf("revisit older durable coverage: %v", err)
 	}
 	var next, committed, revision int64
 	if err := db.Pool.QueryRow(ctx, "SELECT next_article_number, last_committed_article_number, revision FROM job_checkpoints WHERE job_id = $1", job.ID).Scan(&next, &committed, &revision); err != nil || next != 15 || committed != 14 || revision < 2 {

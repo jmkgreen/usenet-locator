@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jmkgreen/usenet-locator/backend/internal/accounts"
+	"github.com/jmkgreen/usenet-locator/backend/internal/archive"
 	"github.com/jmkgreen/usenet-locator/backend/internal/articles"
 	"github.com/jmkgreen/usenet-locator/backend/internal/config"
 	"github.com/jmkgreen/usenet-locator/backend/internal/database"
@@ -84,6 +85,9 @@ func main() {
 	watchlistStore := watchlist.NewStore(db.Pool)
 	go runWatchlist(workerContext, logger, watchlistStore, retentionService)
 	handler := httpapi.NewHandlerWithServices("dev", db.Ready, jobStore, jobStore, articles.NewStore(db.Pool))
+	handler = httpapi.WithArchiveVerification(handler, archive.NewVerifier(db.Pool))
+	handler = httpapi.WithArchiveReprocessing(handler, archive.NewReprocessor(db.Pool, int64(cfg.Resources.MaxBodyBytes)))
+	handler = httpapi.WithQuarantinedOverviews(handler, archive.NewQuarantineStore(db.Pool))
 	handler = httpapi.WithBodyRetrieval(handler, retrieval.New(cfg, articles.NewStore(db.Pool), accountGuard, quotaStore))
 	handler = httpapi.WithProviderStatus(handler, providers.New(cfg, quotaStore, accountGuard))
 	qualificationService := qualification.New(cfg, accountGuard, quotaStore)
