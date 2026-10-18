@@ -59,6 +59,57 @@ Add retained-history discovery and oldest-first browsing:
   require an operator-selected count and transfer-size budget, rather than
   turning a header-navigation action into unbounded provider traffic.
 
+Add a direct earliest-header discovery workflow for any requested newsgroup:
+
+- provide a group entry field in the Coverage view so the operator can request
+  discovery for a group that has never been indexed as well as one with prior
+  scans;
+- make the action invoke the existing bounded retention probe against every
+  enabled provider, rather than requiring the group to appear first in the
+  locally stored-groups table or requiring a date-range indexing job;
+- create the local newsgroup record and persist each provider's result even
+  when no usable header is found, so unavailable groups, empty results,
+  provider failures, and successful discoveries are distinguishable;
+- show per-provider progress/outcome, group low/high bounds, earliest observed
+  article/date when available, and the probe timestamp; never describe a
+  bounded result as proof that no older Usenet article exists;
+- after discovery, offer an explicit bounded action to retrieve the next oldest
+  headers from each provider, reusing durable cursors and transfer accounting;
+- keep ordinary chronological browsing read-only against locally stored
+  headers, and make its boundary explain whether more history is unprobed,
+  unavailable, or has exhausted the current provider cursor;
+- expose the workflow through a documented REST operation that accepts only a
+  validated newsgroup name and returns a job/result representation suitable
+  for a new or existing group; and
+- test new-group and previously scanned-group flows, provider partial failure,
+  empty/undated overview rows, repeated requests, quota exhaustion, durable
+  cursor continuation, and the guarantee that read-only browsing does not
+  contact NNTP.
+
+Represent discovery work visibly as a durable Coverage job queue:
+
+- queue earliest-header discovery instead of making the Coverage action appear
+  synchronous or silently running in the background;
+- reuse the existing job lifecycle where practical, or add an explicit
+  retention-discovery job type, with queued, running, completed, failed,
+  cancelled, and interrupted states plus timestamps and safe error summaries;
+- show the queue in the Coverage panel immediately after submission, including
+  the requested group, operation, overall state, created/started/finished
+  times, and actions such as cancel or retry where supported;
+- show child/provider work beneath each discovery job, including provider
+  state, group-boundary/probe information, headers discovered/stored, quota
+  usage, and the reason for any partial or failed result;
+- poll the queue and selected job status at the established interval, retain
+  completed and failed entries long enough for the operator to understand what
+  happened, and refresh retention observations and stored headers when work
+  completes;
+- make submission return a job identifier and render an explicit confirmation
+  such as “Queued” or “Running”, so clicking the action cannot leave the user
+  unsure whether provider traffic occurred; and
+- add acceptance tests proving that a new-group request, an existing-group
+  request, provider failures, cancellation, restart/interruption, and
+  completion are all reflected in the on-screen queue.
+
 Add a provider-agnostic chronological header browser:
 
 - a group-scoped API that returns canonical stored headers in ascending or

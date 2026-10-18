@@ -50,7 +50,7 @@ func (s *memoryStore) Cursor(context.Context, string, string) (int64, int64, boo
 	if s.found {
 		return s.start, s.high, true, nil
 	}
-	return 12, 9999, true, nil
+	return 0, 0, false, nil
 }
 func (s *memoryStore) StoreHeaders(_ context.Context, _ string, _ string, headers []nntp.Overview, next, _ int64) error {
 	s.stored = append([]nntp.Overview(nil), headers...)
@@ -105,6 +105,27 @@ func (q *quotaRecorder) Consume(_ context.Context, _ string, bytes int64) error 
 	return nil
 }
 
+type stoppingStore struct {
+	memoryStore
+	checks int
+}
+
+func (s *stoppingStore) CheckJobRunning(context.Context, string) error {
+	s.checks++
+	if s.checks > 2 {
+		return errors.New("job cancelled")
+	}
+	return nil
+}
+
+type exhaustedQuota struct{}
+
+func (exhaustedQuota) Consume(context.Context, string, int64) error { return accounts.ErrQuotaExceeded }
+func (exhaustedQuota) ListUsage(context.Context) ([]accounts.Usage, error) {
+	limit := int64(100)
+	return []accounts.Usage{{AccountID: "a", TransferUsedBytes: limit, TransferLimitBytes: &limit}}, nil
+}
+
 func TestProbeRecordsEarliestObservedArticleInOneBoundedWindow(t *testing.T) {
 	secretDir := t.TempDir()
 	usernameFile := filepath.Join(secretDir, "username")
@@ -125,7 +146,7 @@ func TestProbeRecordsEarliestObservedArticleInOneBoundedWindow(t *testing.T) {
 	}
 }
 
-func TestRetrieveNextStoresOnlyDatedIdentifiedHeadersAndChargesTransfer(t *testing.T) {
+func TestRetrieveNextStoresIdentifiedHeadersAndChargesTransfer(t *testing.T) {
 	secretDir := t.TempDir()
 	usernameFile := filepath.Join(secretDir, "username")
 	passwordFile := filepath.Join(secretDir, "password")
@@ -148,7 +169,7 @@ func TestRetrieveNextStoresOnlyDatedIdentifiedHeadersAndChargesTransfer(t *testi
 	if err := service.RetrieveNext(context.Background(), "alt.test", 10); err != nil {
 		t.Fatal(err)
 	}
-	if len(store.stored) != 1 || store.stored[0].MessageID != "<keep@test>" || store.next != 13 || quota.bytes != 55 || client.group != "alt.test" {
+	if len(store.stored) != 2 || store.stored[0].MessageID != "<keep@test>" || store.stored[1].MessageID != "<undated@test>" || store.next != 13 || quota.bytes != 55 || client.group != "alt.test" {
 		t.Fatalf("stored=%#v next=%d quota=%d group=%q", store.stored, store.next, quota.bytes, client.group)
 	}
 }
@@ -162,6 +183,130 @@ func TestRetrieveNextRejectsUnsafeInputAndMissingCursor(t *testing.T) {
 		if err := service.RetrieveNext(context.Background(), request.group, request.limit); err == nil {
 			t.Fatalf("RetrieveNext(%q, %d) accepted invalid input", request.group, request.limit)
 		}
+	}
+}
+
+func TestProbeHandlesUndatedAndEmptyWindows(t *testing.T) {
+	dir := t.TempDir()
+	username, password := filepath.Join(dir, "username"), filepath.Join(dir, "password")
+	if err := os.WriteFile(username, []byte("user"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(password, []byte("pass"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	disabled := false
+	cfg := config.Config{Accounts: []config.AccountConfig{{ID: "a", UsernameFile: username, PasswordFile: password, ConnectionLimit: 1}}, Endpoints: []config.EndpointConfig{{ID: "enabled", AccountID: "a", Host: "news.example", Port: 563}, {ID: "disabled", AccountID: "a", Host: "news.example", Port: 563, Enabled: &disabled}}}
+	store := &memoryStore{}
+	client := &probeClient{overviews: []nntp.Overview{{ArticleNumber: 11, MessageID: "<undated@test>"}, {ArticleNumber: 12, MessageID: "<dated@test>", Date: time.Now()}}}
+	service := New(cfg, store, accounts.NewGuard(cfg), nil)
+	service.dial = func(context.Context, nntp.Endpoint) (nntp.Client, error) { return client, nil }
+	items, err := service.Probe(context.Background(), "alt.test")
+	if err != nil || len(items) != 1 || items[0].Outcome != "undated" || *items[0].ArticleNumber != 11 {
+		t.Fatalf("undated=%#v err=%v", items, err)
+	}
+	client.overviews = []nntp.Overview{}
+	client.ranges = nil
+	items, err = service.Probe(context.Background(), "alt.test")
+	if err != nil || len(items) != 1 || items[0].Outcome != "no_header_in_probe" || len(client.ranges) != 10 {
+		t.Fatalf("empty=%#v windows=%v err=%v", items, client.ranges, err)
+	}
+}
+
+func TestRetrieveNextDoesNotSkipRemainderOfWindow(t *testing.T) {
+	dir := t.TempDir()
+	username, password := filepath.Join(dir, "user"), filepath.Join(dir, "pass")
+	if err := os.WriteFile(username, []byte("user"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(password, []byte("pass"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{Accounts: []config.AccountConfig{{ID: "a", UsernameFile: username, PasswordFile: password, ConnectionLimit: 1}}, Endpoints: []config.EndpointConfig{{ID: "p", AccountID: "a", Host: "news.example", Port: 563}}}
+	store := &memoryStore{start: 10, high: 109, found: true}
+	client := &probeClient{overviews: []nntp.Overview{{ArticleNumber: 13, MessageID: "<three@test>"}, {ArticleNumber: 11, MessageID: "<one@test>"}, {ArticleNumber: 12, MessageID: "<two@test>"}, {ArticleNumber: 999, MessageID: "<outside@test>"}}}
+	service := New(cfg, store, accounts.NewGuard(cfg), nil)
+	service.dial = func(context.Context, nntp.Endpoint) (nntp.Client, error) { return client, nil }
+	if err := service.RetrieveNext(context.Background(), "alt.test", 2); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.stored) != 2 || store.stored[0].ArticleNumber != 11 || store.stored[1].ArticleNumber != 12 || store.next != 13 {
+		t.Fatalf("stored=%v next=%d", store.stored, store.next)
+	}
+}
+
+func TestDiscoveryStopsBetweenWindowsWhenCancelled(t *testing.T) {
+	dir := t.TempDir()
+	username, password := filepath.Join(dir, "user"), filepath.Join(dir, "pass")
+	if err := os.WriteFile(username, []byte("user"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(password, []byte("pass"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{Accounts: []config.AccountConfig{{ID: "a", UsernameFile: username, PasswordFile: password, ConnectionLimit: 1}}, Endpoints: []config.EndpointConfig{{ID: "p", AccountID: "a", Host: "news.example", Port: 563}}}
+	store, client := &stoppingStore{}, &probeClient{overviews: []nntp.Overview{}}
+	service := New(cfg, store, accounts.NewGuard(cfg), nil)
+	service.dial = func(context.Context, nntp.Endpoint) (nntp.Client, error) { return client, nil }
+	if _, err := service.ProbeProvider(context.Background(), "job", "p", "alt.test"); err == nil {
+		t.Fatal("cancelled probe succeeded")
+	}
+	if len(client.ranges) != 1 || len(store.observations) != 0 {
+		t.Fatalf("ranges=%v observations=%v", client.ranges, store.observations)
+	}
+}
+
+func TestDiscoveryDoesNotDialWhenQuotaIsExhausted(t *testing.T) {
+	cfg := config.Config{Accounts: []config.AccountConfig{{ID: "a", ConnectionLimit: 1}}, Endpoints: []config.EndpointConfig{{ID: "p", AccountID: "a", Host: "news.example", Port: 563}}}
+	service := New(cfg, &memoryStore{}, accounts.NewGuard(cfg), exhaustedQuota{})
+	called := false
+	service.dial = func(context.Context, nntp.Endpoint) (nntp.Client, error) {
+		called = true
+		return nil, errors.New("unexpected dial")
+	}
+	items, err := service.Probe(context.Background(), "alt.test")
+	if err != nil || called || len(items) != 1 || items[0].Outcome != "quota_reached" {
+		t.Fatalf("items=%v called=%v err=%v", items, called, err)
+	}
+}
+
+func TestRetrieveNextChargesFailedRequestsAndRejectsMissingCursor(t *testing.T) {
+	dir := t.TempDir()
+	username, password := filepath.Join(dir, "user"), filepath.Join(dir, "pass")
+	if err := os.WriteFile(username, []byte("user"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(password, []byte("pass"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{Accounts: []config.AccountConfig{{ID: "a", UsernameFile: username, PasswordFile: password, ConnectionLimit: 1}}, Endpoints: []config.EndpointConfig{{ID: "p", AccountID: "a", Host: "news.example", Port: 563}}}
+	cases := []struct {
+		name  string
+		setup func(*probeClient)
+	}{
+		{"authentication", func(c *probeClient) { c.authErr = errors.New("auth") }},
+		{"capabilities", func(c *probeClient) { c.capsErr = errors.New("caps") }},
+		{"reader", func(c *probeClient) { c.modeErr = errors.New("mode") }},
+		{"group", func(c *probeClient) { c.groupErr = errors.New("group") }},
+		{"overview", func(c *probeClient) { c.overviewErr = errors.New("overview") }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client, quota := &probeClient{transfer: 42}, &quotaRecorder{}
+			tc.setup(client)
+			service := New(cfg, &memoryStore{found: true, start: 10, high: 20}, accounts.NewGuard(cfg), quota)
+			service.dial = func(context.Context, nntp.Endpoint) (nntp.Client, error) { return client, nil }
+			if err := service.RetrieveNext(context.Background(), "comp.test", 10); err == nil || quota.bytes != 42 {
+				t.Fatalf("err=%v bytes=%d", err, quota.bytes)
+			}
+		})
+	}
+	service := New(cfg, &memoryStore{}, accounts.NewGuard(cfg), nil)
+	if err := service.RetrieveNext(context.Background(), "comp.test", 10); err == nil {
+		t.Fatal("accepted a missing cursor")
+	}
+	if _, err := service.ProbeProvider(context.Background(), "job", "missing", "comp.test"); err == nil {
+		t.Fatal("accepted an unknown provider")
 	}
 }
 
@@ -191,7 +336,7 @@ func TestProbeUsesSafeFixedOutcomesForProviderFailures(t *testing.T) {
 			tc.set(client)
 			service := New(cfg, &memoryStore{}, accounts.NewGuard(cfg), nil)
 			service.dial = func(context.Context, nntp.Endpoint) (nntp.Client, error) { return client, nil }
-			observation := service.probeEndpoint(context.Background(), cfg.Endpoints[0], "alt.test")
+			observation := service.probeEndpoint(context.Background(), cfg.Endpoints[0], "alt.test", nil)
 			if observation.Outcome != tc.want || strings.Contains(observation.Outcome, "transcript") || strings.Contains(observation.Outcome, "credential") {
 				t.Fatalf("observation = %#v", observation)
 			}

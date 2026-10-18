@@ -39,6 +39,7 @@ type CreateRequest struct {
 // excludes credentials and protocol transcripts.
 type Job struct {
 	ID                 string
+	Kind               string
 	Newsgroup          string
 	Endpoint           string
 	StartDate          time.Time
@@ -54,17 +55,25 @@ type Job struct {
 	TransferUsedBytes  int64
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
+	StartedAt          *time.Time
+	CompletedAt        *time.Time
 	ProviderJobs       []ProviderJob
 }
 
 // ProviderJob is a safe, endpoint-specific child status for a fan-out request.
 type ProviderJob struct {
-	Endpoint          string  `json:"endpoint"`
-	State             State   `json:"state"`
-	HeadersRetrieved  int64   `json:"headers_retrieved"`
-	ArticlesStored    int64   `json:"articles_stored"`
-	TransferUsedBytes int64   `json:"transfer_used_bytes"`
-	LastError         *string `json:"last_error"`
+	Endpoint          string     `json:"endpoint"`
+	State             State      `json:"state"`
+	HeadersRetrieved  int64      `json:"headers_retrieved"`
+	ArticlesStored    int64      `json:"articles_stored"`
+	TransferUsedBytes int64      `json:"transfer_used_bytes"`
+	LastError         *string    `json:"last_error"`
+	Outcome           *string    `json:"outcome,omitempty"`
+	GroupLow          *int64     `json:"group_low,omitempty"`
+	GroupHigh         *int64     `json:"group_high,omitempty"`
+	ArticleNumber     *int64     `json:"article_number,omitempty"`
+	ArticleID         *int64     `json:"article_id,omitempty"`
+	ObservedDate      *time.Time `json:"observed_date,omitempty"`
 }
 
 var ErrNotFound = errors.New("job not found")
@@ -80,6 +89,14 @@ type Creator interface {
 // Finder is the minimum job dependency needed to retrieve job status.
 type Finder interface {
 	Get(context.Context, string) (Job, error)
+}
+
+type Lister interface {
+	List(context.Context, int) ([]Job, error)
+}
+
+type DiscoveryCreator interface {
+	CreateDiscovery(context.Context, string) (string, error)
 }
 
 // Claimer is the durable scheduler boundary. A worker only receives a job

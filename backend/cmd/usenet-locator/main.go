@@ -67,8 +67,20 @@ func main() {
 	accountGuard := accounts.NewGuard(cfg)
 	quotaStore := accounts.NewQuotaStore(db.Pool)
 	runner := indexing.NewRunner(cfg, indexing.NewStore(db.Pool), jobStore, accountGuard, quotaStore, jobStore)
-	go runDispatcher(workerContext, logger, dispatcher, runner)
 	retentionService := retention.New(cfg, retention.NewStore(db.Pool), accountGuard, quotaStore)
+	go runDispatcher(workerContext, logger, dispatcher, func(ctx context.Context, job jobs.Job) error {
+		if job.Kind != "retention_discovery" {
+			return runner.Run(ctx, job)
+		}
+		_, err := retentionService.ProbeProvider(ctx, job.ID, job.Endpoint, job.Newsgroup)
+		if err != nil {
+			if ctx.Err() == nil {
+				_ = jobStore.Interrupt(ctx, job.ID, "discovery interrupted")
+			}
+			return err
+		}
+		return nil
+	})
 	watchlistStore := watchlist.NewStore(db.Pool)
 	go runWatchlist(workerContext, logger, watchlistStore, retentionService)
 	handler := httpapi.NewHandlerWithServices("dev", db.Ready, jobStore, jobStore, articles.NewStore(db.Pool))
@@ -139,11 +151,11 @@ func runWatchlist(ctx context.Context, logger *slog.Logger, store watchlist.Stor
 	}
 }
 
-func runDispatcher(ctx context.Context, logger *slog.Logger, dispatcher jobs.Dispatcher, runner indexing.Runner) {
+func runDispatcher(ctx context.Context, logger *slog.Logger, dispatcher jobs.Dispatcher, execute func(context.Context, jobs.Job) error) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for {
-		claimed, err := dispatcher.RunOnce(ctx, runner.Run)
+		claimed, err := dispatcher.RunOnce(ctx, execute)
 		if err != nil {
 			logger.Error("index job interrupted", "error", err)
 		}

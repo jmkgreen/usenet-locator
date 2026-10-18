@@ -12,6 +12,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jmkgreen/usenet-locator/backend/internal/config"
 	"github.com/jmkgreen/usenet-locator/backend/internal/database"
+	"github.com/jmkgreen/usenet-locator/backend/internal/nntp"
+	"github.com/jmkgreen/usenet-locator/backend/internal/retention"
 )
 
 // This acceptance test exercises the durable fan-out scheduler using a real
@@ -144,6 +146,103 @@ func TestPostgresFanoutLifecycle(t *testing.T) {
 	}
 	if parent, err := store.Get(ctx, recoverID); err != nil || parent.State != Queued || len(parent.ProviderJobs) != 2 || parent.ProviderJobs[0].State != Interrupted || parent.ProviderJobs[1].State != Queued || parent.LastError == nil {
 		t.Fatalf("recovered fan-out = %#v, err=%v", parent, err)
+	}
+}
+
+func TestPostgresDiscoveryQueueAndRetentionPersistence(t *testing.T) {
+	rawURL := os.Getenv("USENET_LOCATOR_TEST_DATABASE_URL")
+	if rawURL == "" {
+		t.Skip("USENET_LOCATOR_TEST_DATABASE_URL is not configured")
+	}
+	ctx := context.Background()
+	admin, err := pgxpool.New(ctx, rawURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	schema := "discovery_test_" + jobsTestSuffix(t)
+	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE") })
+	db, err := database.Open(ctx, jobsTestURL(t, rawURL, schema), 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SyncConfiguration(ctx, config.Config{Accounts: []config.AccountConfig{{ID: "account", UsernameFile: "user", PasswordFile: "pass", ConnectionLimit: 2}}, Endpoints: []config.EndpointConfig{{ID: "primary", AccountID: "account", Host: "one.example", Port: 563, TLS: true, Primary: true}, {ID: "secondary", AccountID: "account", Host: "two.example", Port: 563, TLS: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	store, observations := NewStore(db.Pool), retention.NewStore(db.Pool)
+	id, err := store.CreateDiscovery(ctx, "Comp.New")
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := store.Get(ctx, id)
+	if err != nil || job.Kind != "retention_discovery" || job.Newsgroup != "comp.new" || job.State != Queued || len(job.ProviderJobs) != 2 || !job.StartDate.IsZero() {
+		t.Fatalf("created=%#v err=%v", job, err)
+	}
+	date := time.Date(2001, 2, 3, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 2; i++ {
+		child, claimed, err := store.ClaimNext(ctx)
+		if err != nil || !claimed || child.Kind != "retention_discovery" {
+			t.Fatalf("claim=%#v %v %v", child, claimed, err)
+		}
+		item := retention.Observation{Endpoint: child.Endpoint, Newsgroup: child.Newsgroup, JobID: child.ID, TransferBytes: 42, GroupLow: 10, GroupHigh: 100, Outcome: "group_unavailable"}
+		if child.Endpoint == "primary" {
+			number := int64(11)
+			item.Outcome = "found"
+			item.ArticleNumber = &number
+			item.ObservedDate = &date
+			item.Article = &nntp.Overview{ArticleNumber: number, MessageID: "<old@test>", Date: date}
+		}
+		if _, err := observations.Record(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	job, err = store.Get(ctx, id)
+	if err != nil || job.State != Failed || job.LastError == nil || job.TransferUsedBytes != 84 || len(job.ProviderJobs) != 2 {
+		t.Fatalf("partial=%#v err=%v", job, err)
+	}
+	listed, err := store.List(ctx, 50)
+	if err != nil || len(listed) != 1 || listed[0].ID != id {
+		t.Fatalf("list=%#v err=%v", listed, err)
+	}
+	stored, err := observations.ListLatest(ctx, "comp.new")
+	if err != nil || len(stored) != 2 {
+		t.Fatalf("observations=%#v err=%v", stored, err)
+	}
+	if err := observations.StoreHeaders(ctx, "primary", "comp.new", nil, 50, 100); err != nil {
+		t.Fatal(err)
+	}
+	number := int64(11)
+	if _, err := observations.Record(ctx, retention.Observation{Endpoint: "primary", Newsgroup: "comp.new", GroupLow: 10, GroupHigh: 100, ArticleNumber: &number, Article: &nntp.Overview{ArticleNumber: number, MessageID: "<old@test>", Date: date}, Outcome: "found"}); err != nil {
+		t.Fatal(err)
+	}
+	next, _, found, err := observations.Cursor(ctx, "primary", "comp.new")
+	if err != nil || !found || next != 50 {
+		t.Fatalf("cursor=%d found=%v err=%v", next, found, err)
+	}
+	cancelID, err := store.CreateDiscovery(ctx, "comp.cancel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, claimed, err := store.ClaimNext(ctx)
+	if err != nil || !claimed {
+		t.Fatalf("claim=%v err=%v", claimed, err)
+	}
+	if err := store.Transition(ctx, cancelID, Cancelled); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := observations.Record(ctx, retention.Observation{Endpoint: child.Endpoint, Newsgroup: child.Newsgroup, JobID: child.ID, Outcome: "no_header_in_probe"}); err == nil {
+		t.Fatal("cancelled job persisted a discovery result")
+	}
+	job, err = store.Get(ctx, cancelID)
+	if err != nil || job.State != Cancelled {
+		t.Fatalf("cancelled=%#v err=%v", job, err)
 	}
 }
 

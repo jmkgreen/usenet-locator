@@ -496,6 +496,12 @@ func NewHandlerWithServices(version string, readiness Readiness, creator jobs.Cr
 	if creator != nil {
 		mux.HandleFunc("POST /api/v1/jobs", createJob(creator))
 	}
+	if discovery, ok := creator.(jobs.DiscoveryCreator); ok {
+		mux.HandleFunc("POST /api/v1/discovery-jobs", createDiscoveryJob(discovery))
+	}
+	if lister, ok := finder.(jobs.Lister); ok {
+		mux.HandleFunc("GET /api/v1/jobs", listJobs(lister))
+	}
 	if finder != nil {
 		mux.HandleFunc("GET /api/v1/jobs/{id}", getJob(finder))
 	}
@@ -514,6 +520,60 @@ func NewHandlerWithServices(version string, readiness Readiness, creator jobs.Cr
 		mux.HandleFunc("GET /api/v1/articles/{id}", getArticle(detailer))
 	}
 	return mux
+}
+
+func createDiscoveryJob(creator jobs.DiscoveryCreator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Newsgroup string `json:"newsgroup"`
+		}
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&body); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON request"})
+			return
+		}
+		group := strings.ToLower(strings.TrimSpace(body.Newsgroup))
+		if !jobs.ValidGroupName(group) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid newsgroup name"})
+			return
+		}
+		id, err := creator.CreateDiscovery(r.Context(), group)
+		if err != nil {
+			if errors.Is(err, jobs.ErrUnknownEndpoint) {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no enabled provider is configured"})
+			} else {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not queue discovery"})
+			}
+			return
+		}
+		w.Header().Set("Location", "/api/v1/jobs/"+id)
+		writeJSON(w, http.StatusAccepted, map[string]string{"id": id, "state": string(jobs.Queued)})
+	}
+}
+
+func listJobs(lister jobs.Lister) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		limit := 50
+		if value := r.URL.Query().Get("limit"); value != "" {
+			parsed, err := strconv.Atoi(value)
+			if err != nil || parsed < 1 || parsed > 100 {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "limit must be between 1 and 100"})
+				return
+			}
+			limit = parsed
+		}
+		items, err := lister.List(r.Context(), limit)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not list jobs"})
+			return
+		}
+		response := make([]map[string]any, 0, len(items))
+		for _, item := range items {
+			response = append(response, jobResponse(item))
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"jobs": response})
+	}
 }
 
 func transitionJob(transitioner jobs.Transitioner, target jobs.State) http.HandlerFunc {
@@ -738,9 +798,9 @@ func getJob(finder jobs.Finder) http.HandlerFunc {
 }
 
 func jobResponse(job jobs.Job) map[string]any {
-	return map[string]any{
+	response := map[string]any{
 		"id": job.ID, "newsgroup": job.Newsgroup, "endpoint": job.Endpoint,
-		"start_date": job.StartDate.Format("2006-01-02"), "end_date": job.EndDate.Format("2006-01-02"),
+		"kind":        job.Kind,
 		"margin_days": job.MarginDays, "state": job.State,
 		"headers_retrieved": job.HeadersRetrieved, "articles_stored": job.ArticlesStored,
 		"scan_reason": job.ScanReason, "source_job_id": job.SourceJobID,
@@ -748,5 +808,13 @@ func jobResponse(job jobs.Job) map[string]any {
 		"provider_jobs": job.ProviderJobs,
 		"last_error":    job.LastError, "created_at": job.CreatedAt.UTC().Format(time.RFC3339),
 		"updated_at": job.UpdatedAt.UTC().Format(time.RFC3339),
+		"started_at": job.StartedAt, "completed_at": job.CompletedAt,
 	}
+	if !job.StartDate.IsZero() {
+		response["start_date"] = job.StartDate.Format("2006-01-02")
+	}
+	if !job.EndDate.IsZero() {
+		response["end_date"] = job.EndDate.Format("2006-01-02")
+	}
+	return response
 }

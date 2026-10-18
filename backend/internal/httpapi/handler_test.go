@@ -225,6 +225,64 @@ func (s *testJobs) Transition(_ context.Context, _ string, target jobs.State) er
 	return s.moveErr
 }
 
+type testDiscoveryJobs struct {
+	testJobs
+	group string
+}
+
+func (s *testDiscoveryJobs) CreateDiscovery(_ context.Context, group string) (string, error) {
+	s.group = group
+	return "discovery-id", s.createErr
+}
+func (s *testDiscoveryJobs) List(_ context.Context, limit int) ([]jobs.Job, error) {
+	return []jobs.Job{s.job}, s.getErr
+}
+
+func TestDiscoveryQueueAPI(t *testing.T) {
+	store := &testDiscoveryJobs{testJobs: testJobs{job: jobs.Job{ID: "discovery-id", Kind: "retention_discovery", Newsgroup: "comp.test", State: jobs.Queued}}}
+	handler := NewHandlerWithDependencies("test", nil, store, store)
+	created := httptest.NewRecorder()
+	handler.ServeHTTP(created, httptest.NewRequest(http.MethodPost, "/api/v1/discovery-jobs", strings.NewReader(`{"newsgroup":"  Comp.Test "}`)))
+	if created.Code != http.StatusAccepted || store.group != "comp.test" || created.Header().Get("Location") != "/api/v1/jobs/discovery-id" {
+		t.Fatalf("created=%d %s group=%q", created.Code, created.Body.String(), store.group)
+	}
+	for _, body := range []string{`{"newsgroup":"../bad"}`, `{"newsgroup":"comp.test","extra":true}`, `{"newsgroup":""}`} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/discovery-jobs", strings.NewReader(body)))
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("accepted %s: %d", body, response.Code)
+		}
+	}
+	listed := httptest.NewRecorder()
+	handler.ServeHTTP(listed, httptest.NewRequest(http.MethodGet, "/api/v1/jobs?limit=50", nil))
+	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), `"kind":"retention_discovery"`) || strings.Contains(listed.Body.String(), `"start_date"`) {
+		t.Fatalf("list=%d %s", listed.Code, listed.Body.String())
+	}
+	badLimit := httptest.NewRecorder()
+	handler.ServeHTTP(badLimit, httptest.NewRequest(http.MethodGet, "/api/v1/jobs?limit=101", nil))
+	if badLimit.Code != http.StatusBadRequest {
+		t.Fatalf("bad limit=%d", badLimit.Code)
+	}
+	store.createErr = jobs.ErrUnknownEndpoint
+	noProviders := httptest.NewRecorder()
+	handler.ServeHTTP(noProviders, httptest.NewRequest(http.MethodPost, "/api/v1/discovery-jobs", strings.NewReader(`{"newsgroup":"comp.test"}`)))
+	if noProviders.Code != http.StatusBadRequest {
+		t.Fatalf("no providers=%d", noProviders.Code)
+	}
+	store.createErr = errors.New("database failure")
+	failedCreate := httptest.NewRecorder()
+	handler.ServeHTTP(failedCreate, httptest.NewRequest(http.MethodPost, "/api/v1/discovery-jobs", strings.NewReader(`{"newsgroup":"comp.test"}`)))
+	if failedCreate.Code != http.StatusInternalServerError {
+		t.Fatalf("failed create=%d", failedCreate.Code)
+	}
+	store.getErr = errors.New("database failure")
+	failedList := httptest.NewRecorder()
+	handler.ServeHTTP(failedList, httptest.NewRequest(http.MethodGet, "/api/v1/jobs", nil))
+	if failedList.Code != http.StatusInternalServerError {
+		t.Fatalf("failed list=%d", failedList.Code)
+	}
+}
+
 func TestHealthz(t *testing.T) {
 	t.Parallel()
 

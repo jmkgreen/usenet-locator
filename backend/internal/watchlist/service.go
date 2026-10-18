@@ -24,7 +24,19 @@ func RunDue(ctx context.Context, store DueStore, prober RetentionProber, now tim
 		return err
 	}
 	for _, group := range groups {
-		if _, err := prober.Probe(ctx, group); err != nil {
+		observations, err := prober.Probe(ctx, group)
+		if err != nil {
+			continue
+		}
+		failed := false
+		for _, item := range observations {
+			switch item.Outcome {
+			case "found", "undated", "no_header_in_probe":
+			default:
+				failed = true
+			}
+		}
+		if failed {
 			continue
 		}
 		if err := store.MarkChecked(ctx, group, now); err != nil {

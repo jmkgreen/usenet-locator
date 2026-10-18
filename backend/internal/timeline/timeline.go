@@ -52,8 +52,8 @@ func (s Store) List(ctx context.Context, group, level string, start *time.Time) 
 		} else {
 			rows, err := s.pool.Query(ctx, `SELECT DISTINCT date_trunc('year', value)::date FROM (
                 SELECT a.article_date AS value FROM articles a JOIN article_newsgroups ag ON ag.article_id=a.id JOIN newsgroups g ON g.id=ag.newsgroup_id WHERE g.name=lower($1) AND a.article_date IS NOT NULL
-                UNION SELECT j.requested_start_date::timestamptz FROM index_jobs j JOIN newsgroups g ON g.id=j.newsgroup_id WHERE g.name=lower($1)
-                UNION SELECT j.requested_end_date::timestamptz FROM index_jobs j JOIN newsgroups g ON g.id=j.newsgroup_id WHERE g.name=lower($1)
+                UNION SELECT j.requested_start_date::timestamptz FROM index_jobs j JOIN newsgroups g ON g.id=j.newsgroup_id WHERE g.name=lower($1) AND j.kind='index'
+                UNION SELECT j.requested_end_date::timestamptz FROM index_jobs j JOIN newsgroups g ON g.id=j.newsgroup_id WHERE g.name=lower($1) AND j.kind='index'
             ) periods ORDER BY 1`, group)
 			if err != nil {
 				return nil, fmt.Errorf("list known years: %w", err)
@@ -130,7 +130,7 @@ func (s Store) period(ctx context.Context, group, level string, begin time.Time)
 			return p, err
 		}
 		var complete, active bool
-		err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM index_jobs j JOIN newsgroups g ON g.id=j.newsgroup_id WHERE g.name=lower($1) AND j.endpoint_id=$2 AND NOT j.is_fanout_parent AND j.state='completed' AND j.requested_start_date <= $3 AND j.requested_end_date >= $4), EXISTS(SELECT 1 FROM index_jobs j JOIN newsgroups g ON g.id=j.newsgroup_id WHERE g.name=lower($1) AND j.endpoint_id=$2 AND NOT j.is_fanout_parent AND j.state IN ('queued','running','paused','interrupted') AND daterange(j.requested_start_date, j.requested_end_date, '[]') && daterange($3,$4,'[]'))`, group, endpoint, begin, end.AddDate(0, 0, -1)).Scan(&complete, &active)
+		err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM index_jobs j JOIN newsgroups g ON g.id=j.newsgroup_id WHERE g.name=lower($1) AND j.endpoint_id=$2 AND j.kind='index' AND NOT j.is_fanout_parent AND j.state='completed' AND j.requested_start_date <= $3 AND j.requested_end_date >= $4), EXISTS(SELECT 1 FROM index_jobs j JOIN newsgroups g ON g.id=j.newsgroup_id WHERE g.name=lower($1) AND j.endpoint_id=$2 AND j.kind='index' AND NOT j.is_fanout_parent AND j.state IN ('queued','running','paused','interrupted') AND daterange(j.requested_start_date, j.requested_end_date, '[]') && daterange($3,$4,'[]'))`, group, endpoint, begin, end.AddDate(0, 0, -1)).Scan(&complete, &active)
 		if err != nil {
 			return p, fmt.Errorf("read endpoint coverage: %w", err)
 		}
@@ -200,7 +200,7 @@ func (s Store) gaps(ctx context.Context, group string, start, end time.Time) ([]
 			return nil, err
 		}
 		var complete, active bool
-		err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM index_jobs j JOIN newsgroups g ON g.id=j.newsgroup_id WHERE g.name=lower($1) AND j.endpoint_id=$2 AND NOT j.is_fanout_parent AND j.state='completed' AND j.requested_start_date <= $3 AND j.requested_end_date >= $4), EXISTS(SELECT 1 FROM index_jobs j JOIN newsgroups g ON g.id=j.newsgroup_id WHERE g.name=lower($1) AND j.endpoint_id=$2 AND NOT j.is_fanout_parent AND j.state IN ('queued','running','paused','interrupted') AND daterange(j.requested_start_date,j.requested_end_date,'[]') && daterange($3,$4,'[]'))`, group, id, start, end).Scan(&complete, &active)
+		err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM index_jobs j JOIN newsgroups g ON g.id=j.newsgroup_id WHERE g.name=lower($1) AND j.endpoint_id=$2 AND j.kind='index' AND NOT j.is_fanout_parent AND j.state='completed' AND j.requested_start_date <= $3 AND j.requested_end_date >= $4), EXISTS(SELECT 1 FROM index_jobs j JOIN newsgroups g ON g.id=j.newsgroup_id WHERE g.name=lower($1) AND j.endpoint_id=$2 AND j.kind='index' AND NOT j.is_fanout_parent AND j.state IN ('queued','running','paused','interrupted') AND daterange(j.requested_start_date,j.requested_end_date,'[]') && daterange($3,$4,'[]'))`, group, id, start, end).Scan(&complete, &active)
 		if err != nil {
 			return nil, err
 		}

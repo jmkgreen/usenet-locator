@@ -27,6 +27,19 @@ The storage/coverage view separates locally stored newsgroups from
 endpoint-specific scan evidence. A complete interval on one endpoint is not a
 claim of completeness on another provider.
 
+In **Coverage**, enter any newsgroup under **Discover earliest headers** and
+submit it to queue a check of each enabled provider. The group need not have
+been indexed before. The **Job queue** shows recent discovery and indexing
+jobs, their provider states and results, and available controls. It refreshes
+every five seconds while Coverage is open. Select **Show group results** to
+inspect saved observations and retrieve additional oldest headers.
+
+Each discovery examines at most 1,000 article numbers from the provider's
+reported low bound. The result is the earliest usable header observed in that
+bounded search, not proof that no older article exists. An empty probe or a
+provider failure is shown separately from a successful result. Browsing stored
+headers does not contact providers; retrieving additional headers does.
+
 Use **Timeline coverage** to select a group and browse years, then months, then
 days. A unit is complete only after every enabled endpoint has successfully
 covered it; a gap or pending clue identifies incomplete or active work. Select

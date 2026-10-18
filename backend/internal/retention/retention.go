@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sort"
 	"time"
 
 	"github.com/jmkgreen/usenet-locator/backend/internal/accounts"
@@ -27,7 +28,12 @@ type Observation struct {
 	ObservedDate  *time.Time     `json:"observed_date,omitempty"`
 	Outcome       string         `json:"outcome"`
 	ObservedAt    time.Time      `json:"observed_at"`
+	NextArticle   *int64         `json:"next_article_number,omitempty"`
+	CursorHigh    *int64         `json:"cursor_high,omitempty"`
 	Article       *nntp.Overview `json:"-"`
+	TransferBytes int64          `json:"-"`
+	JobID         string         `json:"-"`
+	ProbeError    error          `json:"-"`
 }
 
 type Store interface {
@@ -44,20 +50,28 @@ func (s Service) RetrieveNext(ctx context.Context, group string, limit int) erro
 	if group == "" || limit < 1 || limit > 100 {
 		return fmt.Errorf("newsgroup and a limit from 1 to 100 are required")
 	}
+	foundCursor := false
 	for _, endpoint := range s.endpoints {
+		if !endpoint.IsEnabled() {
+			continue
+		}
 		start, high, found, err := s.store.Cursor(ctx, endpoint.ID, group)
 		if err != nil {
 			return err
 		}
 		if !found {
-			return fmt.Errorf("find earliest retained article before retrieving older headers")
+			continue
 		}
+		foundCursor = true
 		if start > high {
 			continue
 		}
 		if err := s.retrieveEndpoint(ctx, endpoint, group, start, high, limit); err != nil {
 			return err
 		}
+	}
+	if !foundCursor {
+		return fmt.Errorf("find earliest retained article before retrieving older headers")
 	}
 	return nil
 }
@@ -66,6 +80,9 @@ func (s Service) retrieveEndpoint(ctx context.Context, endpoint config.EndpointC
 	account, ok := s.accounts[endpoint.AccountID]
 	if !ok {
 		return fmt.Errorf("configured account unavailable")
+	}
+	if err := s.checkQuota(ctx, account.ID); err != nil {
+		return err
 	}
 	release, err := s.guard.Acquire(ctx, account.ID)
 	if err != nil {
@@ -81,6 +98,14 @@ func (s Service) retrieveEndpoint(ctx context.Context, endpoint config.EndpointC
 		return fmt.Errorf("connection failed")
 	}
 	defer client.Close()
+	charged := false
+	defer func() {
+		if !charged && s.quota != nil {
+			if meter, ok := client.(nntp.TransferMeter); ok && meter.TransferBytes() > 0 {
+				_ = s.quota.Consume(ctx, account.ID, meter.TransferBytes())
+			}
+		}
+	}()
 	if err := client.Authenticate(ctx, username, password); err != nil {
 		return fmt.Errorf("authentication failed")
 	}
@@ -95,26 +120,62 @@ func (s Service) retrieveEndpoint(ctx context.Context, endpoint config.EndpointC
 	}
 	var headers []nntp.Overview
 	next := start
-	for next <= high && len(headers) < limit {
+	for windows := 0; next <= high && len(headers) < limit && windows < maxProbeWindows; windows++ {
 		end := min(next+probeWindow-1, high)
+		window := make(map[int64]nntp.Overview)
 		if err := client.Overview(ctx, next, end, func(item nntp.Overview) error {
-			if item.MessageID != "" && !item.Date.IsZero() && len(headers) < limit {
-				headers = append(headers, item)
+			if item.ArticleNumber >= next && item.ArticleNumber <= end && validMessageID(item.MessageID) {
+				window[item.ArticleNumber] = item
 			}
 			return nil
 		}); err != nil {
 			return fmt.Errorf("overview retrieval failed")
 		}
-		next = end + 1
+		numbers := make([]int64, 0, len(window))
+		for number := range window {
+			numbers = append(numbers, number)
+		}
+		sort.Slice(numbers, func(i, j int) bool { return numbers[i] < numbers[j] })
+		lastStored := int64(0)
+		for _, number := range numbers {
+			if len(headers) == limit {
+				break
+			}
+			headers = append(headers, window[number])
+			lastStored = number
+		}
+		if len(headers) == limit {
+			next = lastStored + 1
+		} else {
+			next = end + 1
+		}
 	}
 	if s.quota != nil {
 		if meter, ok := client.(nntp.TransferMeter); ok && meter.TransferBytes() > 0 {
+			charged = true
 			if err := s.quota.Consume(ctx, account.ID, meter.TransferBytes()); err != nil {
 				return err
 			}
 		}
 	}
 	return s.store.StoreHeaders(ctx, endpoint.ID, group, headers, next, high)
+}
+
+func (s Service) checkQuota(ctx context.Context, accountID string) error {
+	reader, ok := s.quota.(accounts.UsageReader)
+	if !ok {
+		return nil
+	}
+	usage, err := reader.ListUsage(ctx)
+	if err != nil {
+		return err
+	}
+	for _, item := range usage {
+		if item.AccountID == accountID && item.TransferLimitBytes != nil && item.TransferUsedBytes >= *item.TransferLimitBytes {
+			return accounts.ErrQuotaExceeded
+		}
+	}
+	return nil
 }
 
 type DialFunc func(context.Context, nntp.Endpoint) (nntp.Client, error)
@@ -148,7 +209,10 @@ func (s Service) Probe(ctx context.Context, group string) ([]Observation, error)
 	}
 	var result []Observation
 	for _, endpoint := range s.endpoints {
-		observation := s.probeEndpoint(ctx, endpoint, group)
+		if !endpoint.IsEnabled() {
+			continue
+		}
+		observation := s.probeEndpoint(ctx, endpoint, group, nil)
 		stored, err := s.store.Record(ctx, observation)
 		if err != nil {
 			return nil, fmt.Errorf("record retention observation: %w", err)
@@ -158,10 +222,46 @@ func (s Service) Probe(ctx context.Context, group string) ([]Observation, error)
 	return result, nil
 }
 
-func (s Service) probeEndpoint(ctx context.Context, endpoint config.EndpointConfig, group string) Observation {
-	observation := Observation{Endpoint: endpoint.ID, Newsgroup: group, Outcome: "connection_failed"}
+// ProbeProvider executes and stores one provider's observation for a queued job.
+func (s Service) ProbeProvider(ctx context.Context, jobID, endpointID, group string) (Observation, error) {
+	for _, endpoint := range s.endpoints {
+		if endpoint.ID == endpointID && endpoint.IsEnabled() {
+			var check func(context.Context) error
+			if checker, ok := s.store.(interface {
+				CheckJobRunning(context.Context, string) error
+			}); ok {
+				check = func(ctx context.Context) error { return checker.CheckJobRunning(ctx, jobID) }
+			}
+			observation := s.probeEndpoint(ctx, endpoint, group, check)
+			if observation.ProbeError != nil {
+				return Observation{}, observation.ProbeError
+			}
+			if err := ctx.Err(); err != nil {
+				return Observation{}, err
+			}
+			observation.JobID = jobID
+			return s.store.Record(ctx, observation)
+		}
+	}
+	return Observation{}, fmt.Errorf("configured endpoint unavailable")
+}
+
+func (s Service) probeEndpoint(ctx context.Context, endpoint config.EndpointConfig, group string, check func(context.Context) error) (observation Observation) {
+	observation = Observation{Endpoint: endpoint.ID, Newsgroup: group, Outcome: "connection_failed"}
+	if check != nil {
+		if err := check(ctx); err != nil {
+			observation.ProbeError = err
+			return observation
+		}
+	}
 	account, ok := s.accounts[endpoint.AccountID]
 	if !ok {
+		return observation
+	}
+	if err := s.checkQuota(ctx, account.ID); err != nil {
+		if errors.Is(err, accounts.ErrQuotaExceeded) {
+			observation.Outcome = "quota_reached"
+		}
 		return observation
 	}
 	release, err := s.guard.Acquire(ctx, account.ID)
@@ -178,6 +278,21 @@ func (s Service) probeEndpoint(ctx context.Context, endpoint config.EndpointConf
 		return observation
 	}
 	defer client.Close()
+	defer func() {
+		if meter, ok := client.(nntp.TransferMeter); ok {
+			observation.TransferBytes = meter.TransferBytes()
+			if s.quota != nil && observation.TransferBytes > 0 {
+				if err := s.quota.Consume(ctx, account.ID, observation.TransferBytes); err != nil {
+					if errors.Is(err, accounts.ErrQuotaExceeded) {
+						observation.Outcome = "quota_reached"
+					} else {
+						observation.Outcome = "connection_failed"
+					}
+					observation.Article, observation.ArticleNumber, observation.ObservedDate = nil, nil, nil
+				}
+			}
+		}
+	}()
 	if err := client.Authenticate(ctx, username, password); err != nil {
 		observation.Outcome = "authentication_failed"
 		return observation
@@ -196,33 +311,37 @@ func (s Service) probeEndpoint(ctx context.Context, endpoint config.EndpointConf
 		return observation
 	}
 	observation.GroupLow, observation.GroupHigh = bounds.Low, bounds.High
+	observation.Outcome = "no_header_in_probe"
 	var candidate *nntp.Overview
-	for start := bounds.Low; start <= bounds.High && start < bounds.Low+probeWindow*maxProbeWindows; start += probeWindow {
+	for start := bounds.Low; start > 0 && start <= bounds.High && start < bounds.Low+probeWindow*maxProbeWindows; start += probeWindow {
+		if check != nil {
+			if err := check(ctx); err != nil {
+				observation.ProbeError = err
+				return observation
+			}
+		}
 		end := min(start+probeWindow-1, bounds.High)
 		if err := client.Overview(ctx, start, end, func(item nntp.Overview) error {
-			if candidate == nil && item.MessageID != "" {
+			if item.ArticleNumber >= start && item.ArticleNumber <= end && validMessageID(item.MessageID) && (candidate == nil || item.ArticleNumber < candidate.ArticleNumber) {
 				copy := item
 				candidate = &copy
-			}
-			if !item.Date.IsZero() && observation.Article == nil {
-				copy := item
-				observation.Article = &copy
 			}
 			return nil
 		}); err != nil {
 			observation.Outcome = "overview_failed"
+			candidate = nil
 			break
 		}
-		if observation.Article != nil {
+		if candidate != nil {
 			break
 		}
 	}
-	if observation.Article == nil && candidate != nil {
+	if candidate != nil {
 		observation.Article = candidate
-		observation.Outcome = "undated"
-	}
-	if observation.Article != nil && observation.Outcome != "undated" {
 		observation.Outcome = "found"
+		if candidate.Date.IsZero() {
+			observation.Outcome = "undated"
+		}
 	}
 	if observation.Article != nil {
 		number := observation.Article.ArticleNumber
@@ -230,13 +349,6 @@ func (s Service) probeEndpoint(ctx context.Context, endpoint config.EndpointConf
 		if !observation.Article.Date.IsZero() {
 			date := observation.Article.Date.UTC()
 			observation.ObservedDate = &date
-		}
-	}
-	if s.quota != nil {
-		if meter, ok := client.(nntp.TransferMeter); ok && meter.TransferBytes() > 0 {
-			if err := s.quota.Consume(ctx, account.ID, meter.TransferBytes()); err != nil && errors.Is(err, accounts.ErrQuotaExceeded) {
-				observation.Outcome = "quota_reached"
-			}
 		}
 	}
 	return observation

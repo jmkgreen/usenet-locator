@@ -27,6 +27,21 @@ paths:
         '200':
           description: Application is alive
   /jobs:
+    get:
+      operationId: listJobs
+      summary: List recent top-level indexing and discovery jobs
+      parameters:
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
+      responses:
+        '200':
+          description: Recent jobs with endpoint-level status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [jobs]
+                properties:
+                  jobs: {type: array, items: {$ref: '#/components/schemas/IndexJob'}}
     post:
       operationId: createIndexJob
       summary: Queue an endpoint-specific header indexing job
@@ -50,6 +65,29 @@ paths:
                 $ref: '#/components/schemas/CreateJobResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
+  /discovery-jobs:
+    post:
+      operationId: createRetentionDiscoveryJob
+      summary: Queue bounded earliest-header discovery for every enabled provider
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [newsgroup]
+              properties:
+                newsgroup: {type: string, maxLength: 255}
+      responses:
+        '202':
+          description: Discovery queued; inspect its status at the Location URL
+          headers:
+            Location: {required: true, schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CreateJobResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
   /jobs/{id}:
     get:
       operationId: getIndexJob
@@ -199,6 +237,39 @@ paths:
         - {name: cursor, in: query, schema: {type: string}}
       responses:
         '200': {description: Keyset-paginated chronological headers, content: {application/json: {schema: {$ref: '#/components/schemas/SearchPage'}}}}
+  /newsgroups/{newsgroup}/retention:
+    get:
+      operationId: getRetentionObservations
+      summary: List latest stored retention observations and cursors without contacting providers
+      parameters: [{name: newsgroup, in: path, required: true, schema: {type: string}}]
+      responses:
+        '200':
+          description: Most recent observation per provider
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [observations]
+                properties:
+                  observations:
+                    type: [array, 'null']
+                    items: {$ref: '#/components/schemas/RetentionObservation'}
+  /newsgroups/{newsgroup}/retention-probe:
+    post:
+      operationId: probeRetentionSynchronously
+      summary: Run a bounded synchronous retention probe; use discovery-jobs for queued work
+      parameters: [{name: newsgroup, in: path, required: true, schema: {type: string}}]
+      responses:
+        '200': {description: Provider observations}
+  /newsgroups/{newsgroup}/oldest-headers:
+    post:
+      operationId: retrieveOldestHeaders
+      summary: Retrieve a bounded next batch from discovered provider cursors
+      parameters:
+        - {name: newsgroup, in: path, required: true, schema: {type: string}}
+        - {name: limit, in: query, required: true, schema: {type: integer, minimum: 1, maximum: 100}}
+      responses:
+        '202': {description: Provider retrieval finished}
   /coverage:
     get:
       operationId: listCoverage
@@ -467,15 +538,33 @@ components:
               observed_start: {type: [string, 'null'], format: date-time}
               observed_end: {type: [string, 'null'], format: date-time}
               reason: {type: [string, 'null']}
+    RetentionObservation:
+      type: object
+      required: [endpoint, newsgroup, group_low, group_high, outcome, observed_at]
+      properties:
+        endpoint: {type: string}
+        newsgroup: {type: string}
+        group_low: {type: integer, format: int64}
+        group_high: {type: integer, format: int64}
+        article_number: {type: integer, format: int64}
+        article_id: {type: integer, format: int64}
+        observed_date: {type: string, format: date-time}
+        outcome: {type: string}
+        observed_at: {type: string, format: date-time}
+        next_article_number: {type: integer, format: int64}
+        cursor_high: {type: integer, format: int64}
     IndexJob:
       type: object
-      required: [id, newsgroup, endpoint, start_date, end_date, margin_days, state, headers_retrieved, articles_stored, created_at, updated_at]
+      required: [id, kind, newsgroup, endpoint, margin_days, state, headers_retrieved, articles_stored, created_at, updated_at]
       properties:
         id:
           type: string
           format: uuid
         newsgroup:
           type: string
+        kind:
+          type: string
+          enum: [index, retention_discovery]
         endpoint:
           type: string
         start_date:
@@ -517,6 +606,26 @@ components:
         updated_at:
           type: string
           format: date-time
+        started_at: {type: [string, 'null'], format: date-time}
+        completed_at: {type: [string, 'null'], format: date-time}
+        provider_jobs:
+          type: [array, 'null']
+          items:
+            type: object
+            required: [endpoint, state, headers_retrieved, articles_stored, transfer_used_bytes]
+            properties:
+              endpoint: {type: string}
+              state: {type: string, enum: [queued, running, paused, interrupted, completed, failed, cancelled]}
+              headers_retrieved: {type: integer, format: int64}
+              articles_stored: {type: integer, format: int64}
+              transfer_used_bytes: {type: integer, format: int64}
+              last_error: {type: [string, 'null']}
+              outcome: {type: string}
+              group_low: {type: integer, format: int64}
+              group_high: {type: integer, format: int64}
+              article_number: {type: integer, format: int64}
+              article_id: {type: integer, format: int64}
+              observed_date: {type: string, format: date-time}
     Error:
       type: object
       required: [error]

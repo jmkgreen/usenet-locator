@@ -73,6 +73,12 @@ func TestPostgresStorePersistsBoundedBatchAndCoverage(t *testing.T) {
 	if covered, err := store.IsRangeCovered(ctx, job.ID, 9, 12); err != nil || covered {
 		t.Fatalf("overextended coverage = %v, %v", covered, err)
 	}
+	if coverage, err := store.ListCoverage(ctx, "COMP.INDEXING"); err != nil || len(coverage) != 1 || coverage[0].Endpoint != "primary" || coverage[0].ArticleNumberStart != 10 || coverage[0].ArticleNumberEnd != 12 {
+		t.Fatalf("listed coverage=%#v err=%v", coverage, err)
+	}
+	if coverage, err := store.ListCoverage(ctx, "comp.other"); err != nil || len(coverage) != 0 {
+		t.Fatalf("unrelated coverage=%#v err=%v", coverage, err)
+	}
 	if err := store.AdvanceCovered(ctx, Batch{JobID: job.ID, RangeStart: 13, RangeEnd: 14, NextArticle: 15}); err != nil {
 		t.Fatalf("advance durable coverage: %v", err)
 	}

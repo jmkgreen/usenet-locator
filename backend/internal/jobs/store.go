@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -26,6 +28,24 @@ func (s Store) Create(ctx context.Context, request CreateRequest) (string, error
 	if err := request.Validate(); err != nil {
 		return "", err
 	}
+	return s.create(ctx, request, "index")
+}
+
+var groupNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9+_-]*(\.[a-z0-9][a-z0-9+_-]*)*$`)
+
+func (s Store) CreateDiscovery(ctx context.Context, group string) (string, error) {
+	group = strings.ToLower(strings.TrimSpace(group))
+	if !ValidGroupName(group) {
+		return "", fmt.Errorf("invalid newsgroup name")
+	}
+	return s.create(ctx, CreateRequest{NewsgroupID: group, ScanReason: "operator_requested"}, "retention_discovery")
+}
+
+func ValidGroupName(group string) bool {
+	return len(group) <= 255 && groupNamePattern.MatchString(group)
+}
+
+func (s Store) create(ctx context.Context, request CreateRequest, kind string) (string, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return "", fmt.Errorf("begin job: %w", err)
@@ -60,9 +80,13 @@ func (s Store) Create(ctx context.Context, request CreateRequest) (string, error
 	if err != nil {
 		return "", err
 	}
+	var start, end any
+	if kind == "index" {
+		start, end = request.StartDate, request.EndDate
+	}
 	_, err = tx.Exec(ctx, `INSERT INTO index_jobs
-		(id, newsgroup_id, endpoint_id, requested_start_date, requested_end_date, margin_days, scan_reason, source_job_id, transfer_limit_bytes, is_fanout_parent)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, '')::uuid, $9, TRUE)`, id, groupID, endpoints[0], request.StartDate, request.EndDate, request.MarginDays, request.ScanReason, request.SourceJobID, request.TransferLimitBytes)
+		(id, newsgroup_id, endpoint_id, requested_start_date, requested_end_date, margin_days, scan_reason, source_job_id, transfer_limit_bytes, is_fanout_parent, kind)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, '')::uuid, $9, TRUE, $10)`, id, groupID, endpoints[0], start, end, request.MarginDays, request.ScanReason, request.SourceJobID, request.TransferLimitBytes, kind)
 	if err != nil {
 		return "", fmt.Errorf("insert fan-out parent: %w", err)
 	}
@@ -80,8 +104,8 @@ func (s Store) Create(ctx context.Context, request CreateRequest) (string, error
 			return "", err
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO index_jobs
-            (id, parent_job_id, newsgroup_id, endpoint_id, requested_start_date, requested_end_date, margin_days, scan_reason, source_job_id, transfer_limit_bytes)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULLIF($9, '')::uuid, $10)`, childID, id, groupID, endpointID, request.StartDate, request.EndDate, request.MarginDays, request.ScanReason, request.SourceJobID, childLimit); err != nil {
+            (id, parent_job_id, newsgroup_id, endpoint_id, requested_start_date, requested_end_date, margin_days, scan_reason, source_job_id, transfer_limit_bytes, kind)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULLIF($9, '')::uuid, $10, $11)`, childID, id, groupID, endpointID, start, end, request.MarginDays, request.ScanReason, request.SourceJobID, childLimit, kind); err != nil {
 			return "", fmt.Errorf("insert provider child: %w", err)
 		}
 		if _, err := tx.Exec(ctx, "INSERT INTO job_checkpoints (job_id) VALUES ($1)", childID); err != nil {
@@ -97,15 +121,15 @@ func (s Store) Create(ctx context.Context, request CreateRequest) (string, error
 // Get returns one job's current durable status.
 func (s Store) Get(ctx context.Context, id string) (Job, error) {
 	var job Job
-	var startDate, endDate time.Time
+	var startDate, endDate *time.Time
 	var parent bool
 	err := s.pool.QueryRow(ctx, `SELECT j.id, g.name, j.endpoint_id,
         j.requested_start_date, j.requested_end_date, j.margin_days, j.state,
-		j.headers_retrieved, j.articles_stored, j.last_error, j.scan_reason, j.source_job_id, j.transfer_limit_bytes, j.transfer_used_bytes, j.created_at, j.updated_at, j.is_fanout_parent
+		j.headers_retrieved, j.articles_stored, j.last_error, j.scan_reason, j.source_job_id, j.transfer_limit_bytes, j.transfer_used_bytes, j.created_at, j.updated_at, j.is_fanout_parent, j.kind, j.started_at, j.completed_at
         FROM index_jobs j JOIN newsgroups g ON g.id = j.newsgroup_id WHERE j.id = $1`, id).Scan(
 		&job.ID, &job.Newsgroup, &job.Endpoint, &startDate, &endDate, &job.MarginDays,
 		&job.State, &job.HeadersRetrieved, &job.ArticlesStored, &job.LastError, &job.ScanReason, &job.SourceJobID, &job.TransferLimitBytes, &job.TransferUsedBytes,
-		&job.CreatedAt, &job.UpdatedAt, &parent,
+		&job.CreatedAt, &job.UpdatedAt, &parent, &job.Kind, &job.StartedAt, &job.CompletedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Job{}, ErrNotFound
@@ -113,8 +137,12 @@ func (s Store) Get(ctx context.Context, id string) (Job, error) {
 	if err != nil {
 		return Job{}, fmt.Errorf("get job: %w", err)
 	}
-	job.StartDate = dateOnlyUTC(startDate)
-	job.EndDate = dateOnlyUTC(endDate)
+	if startDate != nil {
+		job.StartDate = dateOnlyUTC(*startDate)
+	}
+	if endDate != nil {
+		job.EndDate = dateOnlyUTC(*endDate)
+	}
 	if parent {
 		if err := s.aggregateParent(ctx, &job); err != nil {
 			return Job{}, err
@@ -123,9 +151,45 @@ func (s Store) Get(ctx context.Context, id string) (Job, error) {
 	return job, nil
 }
 
+// List returns the most recent top-level work, including older standalone jobs.
+func (s Store) List(ctx context.Context, limit int) ([]Job, error) {
+	if limit < 1 || limit > 100 {
+		return nil, fmt.Errorf("limit must be between 1 and 100")
+	}
+	rows, err := s.pool.Query(ctx, `SELECT j.id FROM index_jobs j WHERE j.parent_job_id IS NULL
+        ORDER BY (CASE WHEN j.is_fanout_parent THEN EXISTS (SELECT 1 FROM index_jobs child WHERE child.parent_job_id=j.id AND child.state IN ('queued','running','paused','interrupted')) ELSE j.state IN ('queued','running','paused','interrupted') END) DESC, j.created_at DESC, j.id DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list jobs: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	result := make([]Job, 0, len(ids))
+	for _, id := range ids {
+		item, err := s.Get(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, nil
+}
+
 func (s Store) aggregateParent(ctx context.Context, job *Job) error {
-	rows, err := s.pool.Query(ctx, `SELECT endpoint_id, state, headers_retrieved, articles_stored, transfer_used_bytes, last_error
-        FROM index_jobs WHERE parent_job_id = $1 ORDER BY endpoint_id`, job.ID)
+	rows, err := s.pool.Query(ctx, `SELECT j.endpoint_id, j.state, j.headers_retrieved, j.articles_stored, j.transfer_used_bytes, j.last_error,
+        r.outcome, r.group_low, r.group_high, r.article_number, r.article_id, r.observed_date, j.started_at, j.completed_at
+        FROM index_jobs j LEFT JOIN retention_observations r ON r.job_id=j.id WHERE j.parent_job_id = $1 ORDER BY j.endpoint_id`, job.ID)
 	if err != nil {
 		return fmt.Errorf("list provider jobs: %w", err)
 	}
@@ -133,8 +197,15 @@ func (s Store) aggregateParent(ctx context.Context, job *Job) error {
 	var running, queued, paused, interrupted, cancelled, failed, nonCompleted int
 	for rows.Next() {
 		var child ProviderJob
-		if err := rows.Scan(&child.Endpoint, &child.State, &child.HeadersRetrieved, &child.ArticlesStored, &child.TransferUsedBytes, &child.LastError); err != nil {
+		var started, completed *time.Time
+		if err := rows.Scan(&child.Endpoint, &child.State, &child.HeadersRetrieved, &child.ArticlesStored, &child.TransferUsedBytes, &child.LastError, &child.Outcome, &child.GroupLow, &child.GroupHigh, &child.ArticleNumber, &child.ArticleID, &child.ObservedDate, &started, &completed); err != nil {
 			return fmt.Errorf("read provider job: %w", err)
+		}
+		if started != nil && (job.StartedAt == nil || started.Before(*job.StartedAt)) {
+			job.StartedAt = started
+		}
+		if completed != nil && (job.CompletedAt == nil || completed.After(*job.CompletedAt)) {
+			job.CompletedAt = completed
 		}
 		job.ProviderJobs = append(job.ProviderJobs, child)
 		job.HeadersRetrieved += child.HeadersRetrieved
@@ -176,8 +247,10 @@ func (s Store) aggregateParent(ctx context.Context, job *Job) error {
 		job.State = Interrupted
 	case cancelled == len(job.ProviderJobs):
 		job.State = Cancelled
-	case failed == len(job.ProviderJobs):
+	case failed == len(job.ProviderJobs) || (job.Kind == "retention_discovery" && failed > 0):
 		job.State = Failed
+	case job.Kind == "retention_discovery" && cancelled > 0:
+		job.State = Cancelled
 	case nonCompleted == 0:
 		job.State = Completed
 	default:
@@ -186,6 +259,9 @@ func (s Store) aggregateParent(ctx context.Context, job *Job) error {
 	if nonCompleted > 0 {
 		message := fmt.Sprintf("%d of %d provider scans did not complete", nonCompleted, len(job.ProviderJobs))
 		job.LastError = &message
+	}
+	if job.State == Queued || job.State == Running || job.State == Paused || job.State == Interrupted {
+		job.CompletedAt = nil
 	}
 	return nil
 }
@@ -206,23 +282,28 @@ func (s Store) RecoverInterrupted(ctx context.Context) error {
 // makes the operation safe should an operator accidentally run two processes.
 func (s Store) ClaimNext(ctx context.Context) (Job, bool, error) {
 	var job Job
-	var startDate, endDate time.Time
+	var startDate, endDate *time.Time
 	err := s.pool.QueryRow(ctx, `WITH candidate AS (
 		SELECT id FROM index_jobs WHERE state = $1 AND NOT is_fanout_parent ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1
-    ) UPDATE index_jobs j SET state = $2, updated_at = now() FROM candidate
+    ) UPDATE index_jobs j SET state = $2, updated_at = now(), started_at = COALESCE(started_at, now()) FROM candidate
     WHERE j.id = candidate.id
     RETURNING j.id, (SELECT name FROM newsgroups WHERE id = j.newsgroup_id), j.endpoint_id,
     j.requested_start_date, j.requested_end_date, j.margin_days, j.state, j.headers_retrieved,
-    j.articles_stored, j.last_error, j.scan_reason, j.source_job_id, j.transfer_limit_bytes, j.transfer_used_bytes, j.created_at, j.updated_at`, Queued, Running).Scan(
+    j.articles_stored, j.last_error, j.scan_reason, j.source_job_id, j.transfer_limit_bytes, j.transfer_used_bytes, j.created_at, j.updated_at, j.kind`, Queued, Running).Scan(
 		&job.ID, &job.Newsgroup, &job.Endpoint, &startDate, &endDate, &job.MarginDays, &job.State,
-		&job.HeadersRetrieved, &job.ArticlesStored, &job.LastError, &job.ScanReason, &job.SourceJobID, &job.TransferLimitBytes, &job.TransferUsedBytes, &job.CreatedAt, &job.UpdatedAt)
+		&job.HeadersRetrieved, &job.ArticlesStored, &job.LastError, &job.ScanReason, &job.SourceJobID, &job.TransferLimitBytes, &job.TransferUsedBytes, &job.CreatedAt, &job.UpdatedAt, &job.Kind)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Job{}, false, nil
 	}
 	if err != nil {
 		return Job{}, false, fmt.Errorf("claim next job: %w", err)
 	}
-	job.StartDate, job.EndDate = dateOnlyUTC(startDate), dateOnlyUTC(endDate)
+	if startDate != nil {
+		job.StartDate = dateOnlyUTC(*startDate)
+	}
+	if endDate != nil {
+		job.EndDate = dateOnlyUTC(*endDate)
+	}
 	return job, true, nil
 }
 
@@ -251,7 +332,7 @@ func (s Store) Transition(ctx context.Context, id string, target State) error {
 		case Queued:
 			command, err = tx.Exec(ctx, "UPDATE index_jobs SET state = $1, updated_at = now() WHERE parent_job_id = $2 AND state IN ($3, $4)", target, id, Paused, Interrupted)
 		case Cancelled:
-			command, err = tx.Exec(ctx, "UPDATE index_jobs SET state = $1, updated_at = now() WHERE parent_job_id = $2 AND state IN ($3, $4, $5, $6)", target, id, Queued, Running, Paused, Interrupted)
+			command, err = tx.Exec(ctx, "UPDATE index_jobs SET state = $1, completed_at = now(), updated_at = now() WHERE parent_job_id = $2 AND state IN ($3, $4, $5, $6)", target, id, Queued, Running, Paused, Interrupted)
 		}
 		if err != nil {
 			return fmt.Errorf("update provider jobs: %w", err)
@@ -267,7 +348,7 @@ func (s Store) Transition(ctx context.Context, id string, target State) error {
 	if !CanTransition(current, target) {
 		return fmt.Errorf("%w: %s to %s", ErrInvalidTransition, current, target)
 	}
-	if _, err := tx.Exec(ctx, "UPDATE index_jobs SET state = $1, updated_at = now() WHERE id = $2", target, id); err != nil {
+	if _, err := tx.Exec(ctx, "UPDATE index_jobs SET state = $1, completed_at = CASE WHEN $1::index_job_state = 'cancelled' THEN now() ELSE completed_at END, updated_at = now() WHERE id = $2", target, id); err != nil {
 		return fmt.Errorf("update job state: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

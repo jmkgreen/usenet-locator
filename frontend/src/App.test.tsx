@@ -59,9 +59,12 @@ test("job controls, result marks, reader retrieval, and providers use the API", 
     if (url === "/api/v1/providers/primary/qualifications") return new Response(JSON.stringify({ qualifications: [{ endpoint: "primary", created_at: "2026-09-30T00:00:00Z", result: { capabilities: ["READER"], overview_code: 224, overview_rows: 1, overview_dates: 1 } }] }), { status: 200 });
     if (url === "/api/v1/newsgroups") return new Response(JSON.stringify({ newsgroups: [{ name: "comp.lang.go", articles: 2 }] }), { status: 200 });
     if (url === "/api/v1/coverage") return new Response(JSON.stringify({ coverage: [{ endpoint: "primary", newsgroup: "comp.lang.go", state: "complete", article_number_start: 1, article_number_end: 2 }] }), { status: 200 });
-		if (url === "/api/v1/newsgroups/comp.lang.go/retention-probe") return new Response(JSON.stringify({ observations: [{ endpoint: "primary", newsgroup: "comp.lang.go", article_id: 4, observed_date: "2000-01-01T00:00:00Z", outcome: "found", observed_at: "2026-10-01T00:00:00Z" }] }), { status: 200 });
+    if (url === "/api/v1/discovery-jobs" && method === "POST") return new Response(JSON.stringify({ id: "discovery-1", state: "queued" }), { status: 202 });
+    if (url === "/api/v1/jobs/discovery-1") return new Response(JSON.stringify({ id: "discovery-1", kind: "retention_discovery", newsgroup: "comp.lang.go", state: "queued", headers_retrieved: 0, articles_stored: 0, provider_jobs: [] }), { status: 200 });
+    if (url === "/api/v1/jobs?limit=50") return new Response(JSON.stringify({ jobs: [] }), { status: 200 });
 		if (url === "/api/v1/newsgroups/comp.lang.go/retention") return new Response(JSON.stringify({ observations: [{ endpoint: "primary", newsgroup: "comp.lang.go", article_id: 4, observed_date: "2000-01-01T00:00:00Z", outcome: "found", observed_at: "2026-10-01T00:00:00Z" }] }), { status: 200 });
 		if (url === "/api/v1/newsgroups/comp.lang.go/oldest-headers?limit=10") return new Response(JSON.stringify({ newsgroup: "comp.lang.go", limit: 10 }), { status: 202 });
+    if (url.startsWith("/api/v1/newsgroups/comp.lang.go/headers?")) return new Response(JSON.stringify({ articles: [], next_cursor: "", total_records: 0, page_size: 50 }), { status: 200 });
     return new Response("{}", { status: 500 });
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -78,6 +81,55 @@ test("job controls, result marks, reader retrieval, and providers use the API", 
   expect(document.body.textContent).toContain("Earliest observed: comp.lang.go");
 	expect(document.body.textContent).toContain("Open earliest");
 	expect(document.body.textContent).toContain("Provider qualification history");
+});
+
+test("Coverage queues a new group and displays provider progress and completion", async () => {
+  vi.useFakeTimers();
+  try {
+    let state: "queued" | "completed" = "queued";
+    const job = () => ({ id: "discovery-new", kind: "retention_discovery", newsgroup: "alt.new", state, headers_retrieved: state === "completed" ? 1 : 0, articles_stored: state === "completed" ? 1 : 0, created_at: "2026-10-01T00:00:00Z", provider_jobs: [{ endpoint: "primary", state, headers_retrieved: state === "completed" ? 1 : 0, articles_stored: state === "completed" ? 1 : 0, transfer_used_bytes: 42, ...(state === "completed" ? { outcome: "found", group_low: 10, group_high: 90, article_number: 11 } : {}) }] });
+    const fetchMock = vi.fn(async (input: string | URL, options?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/v1/jobs?limit=50") return new Response(JSON.stringify({ jobs: state === "completed" ? [job()] : [] }), { status: 200 });
+      if (url === "/api/v1/discovery-jobs" && options?.method === "POST") return new Response(JSON.stringify({ id: "discovery-new", state: "queued" }), { status: 202 });
+      if (url === "/api/v1/jobs/discovery-new") return new Response(JSON.stringify(job()), { status: 200 });
+      if (url === "/api/v1/newsgroups/alt.new/retention") return new Response(JSON.stringify({ observations: [{ endpoint: "primary", newsgroup: "alt.new", outcome: "found", article_id: 1, group_low: 10, group_high: 90, observed_at: "2026-10-01T00:00:00Z", next_article_number: 12, cursor_high: 90 }] }), { status: 200 });
+      if (url.startsWith("/api/v1/newsgroups/alt.new/headers?")) return new Response(JSON.stringify({ articles: [], next_cursor: "", total_records: 1, page_size: 50 }), { status: 200 });
+      return new Response("{}", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await act(async () => { root.render(<App />); });
+    const coverage = [...document.querySelectorAll<HTMLButtonElement>("nav button")].find((button) => button.textContent === "Coverage")!;
+    await act(async () => { coverage.click(); });
+    const input = document.querySelector('form[aria-label="Discover earliest headers"] input') as HTMLInputElement;
+    await act(async () => { setValue(input, "alt.new"); });
+    await click("Discover earliest headers");
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/discovery-jobs", expect.objectContaining({ method: "POST", body: JSON.stringify({ newsgroup: "alt.new" }) }));
+    expect(document.querySelector('[aria-label="Job queue"]')?.textContent).toContain("primary");
+    expect(document.body.textContent).toContain("Discovery for alt.new is queued.");
+    state = "completed";
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    expect(document.querySelector('[aria-label="Job queue"]')?.textContent).toContain("group bounds 10–90");
+    expect(document.body.textContent).toContain("Open earliest");
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/newsgroups/alt.new/retention", expect.any(Object));
+  } finally { vi.useRealTimers(); }
+});
+
+test("Coverage shows existing jobs and a partial provider failure", async () => {
+  const item = { id: "partial", kind: "retention_discovery", newsgroup: "comp.existing", state: "failed", headers_retrieved: 1, articles_stored: 1, last_error: "1 of 2 provider scans did not complete", provider_jobs: [
+    { endpoint: "healthy", state: "completed", headers_retrieved: 1, articles_stored: 1, outcome: "found", group_low: 10, group_high: 100 },
+    { endpoint: "offline", state: "failed", headers_retrieved: 0, articles_stored: 0, outcome: "connection_failed", last_error: "connection_failed" },
+  ] };
+  vi.stubGlobal("fetch", vi.fn(async (input: string | URL) => String(input) === "/api/v1/jobs?limit=50" ? new Response(JSON.stringify({ jobs: [item] }), { status: 200 }) : new Response("{}", { status: 404 })));
+  await act(async () => { root.render(<App />); });
+  const coverage = [...document.querySelectorAll<HTMLButtonElement>("nav button")].find((button) => button.textContent === "Coverage")!;
+  await act(async () => { coverage.click(); });
+  const queue = document.querySelector('[aria-label="Job queue"]')!;
+  expect(queue.textContent).toContain("comp.existing");
+  expect(queue.textContent).toContain("healthy");
+  expect(queue.textContent).toContain("offline");
+  expect(queue.textContent).toContain("connection failed");
+  expect(queue.textContent).toContain("Retry discovery");
 });
 
 test("watchlist can be displayed, saved, opened, and removed", async () => {

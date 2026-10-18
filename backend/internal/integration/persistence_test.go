@@ -258,6 +258,15 @@ func TestPersistenceWorkflow(t *testing.T) {
 		t.Fatalf("second chronological page = %#v, err = %v", secondPage, err)
 	}
 	calendar := timelinepkg.NewStore(db.Pool, jobStore)
+	if _, err := jobStore.CreateDiscovery(ctx, "comp.discovery-only"); err != nil {
+		t.Fatalf("queue discovery: %v", err)
+	}
+	if discoveryYears, err := calendar.List(ctx, "comp.discovery-only", "year", nil); err != nil || len(discoveryYears) != 0 {
+		t.Fatalf("discovery-only years = %#v, err = %v", discoveryYears, err)
+	}
+	if discoveryYear, err := calendar.List(ctx, "comp.discovery-only", "year", &date); err != nil || len(discoveryYear) != 1 || discoveryYear[0].State != "gaps" {
+		t.Fatalf("discovery-only coverage = %#v, err = %v", discoveryYear, err)
+	}
 	years, err := calendar.List(ctx, "comp.integration", "year", nil)
 	if err != nil || len(years) != 1 || years[0].State != "gaps" || years[0].ArticleCount != 1 {
 		t.Fatalf("timeline years = %#v, err = %v", years, err)
