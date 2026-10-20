@@ -22,7 +22,7 @@ jobs:
     env:
       USENET_LOCATOR_TEST_DATABASE_URL: postgresql://integration:integration@localhost:5432/integration?sslmode=disable
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version: '1.27.x'
@@ -35,7 +35,7 @@ jobs:
   frontend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -53,7 +53,7 @@ jobs:
   compose-smoke:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Create disposable smoke-test configuration and secrets
         run: |
           cp deploy/config.example.json deploy/config.local.json
@@ -88,7 +88,7 @@ jobs:
     env:
       USENET_LOCATOR_TEST_DATABASE_URL: postgresql://integration:integration@localhost:5432/integration?sslmode=disable
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version: '1.27.x'
